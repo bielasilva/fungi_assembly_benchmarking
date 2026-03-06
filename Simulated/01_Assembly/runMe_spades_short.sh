@@ -1,0 +1,88 @@
+#!/bin/env bash
+
+source /home/gas0042/miniforge3/bin/activate Spades
+
+source /scratch/gas0042/nanopore_benchmark/scripts/sourceMe_configs.sh
+
+# Create output directories
+if [[ ! -d logs/spades_short || ! -d logs/slurm_jobid ]]; then
+    mkdir -p logs/spades_short
+    mkdir -p logs/slurm_jobid
+    echo -e "JobName,JobID,SubmissionTime" > logs/slurm_jobid/spades_short_slurm_jobid.csv
+else
+    cp logs/slurm_jobid/spades_short_slurm_jobid.csv logs/slurm_jobid/spades_short_slurm_jobid.csv.bak
+fi
+
+total_checks=$(( ${#SAMPLES[@]} * ${#depthX[@]} ))
+echo "Total checks to consider: ${total_checks}"
+
+# Loop through each sample and depth
+for SAMPLE in "${SAMPLES[@]}"; do
+    sample_number=$(( sample_number + 1 ))
+    for DEPTH_IL in "${depthX[@]}"; do
+        
+        current_check=$(( current_check + 1 ))
+        progress_bar "$current_check" "$total_checks" "$start_time" "$sample_number" "New jobs: $new_jobs"
+
+        SUBSAMPLE_DIR="${ROOTDIR}/simulated_data/subsampled/${SAMPLE}"
+        ILLUMINA1_FQ="${SUBSAMPLE_DIR}/${SAMPLE}_${DEPTH_IL}.R1.fq"
+        ILLUMINA2_FQ="${SUBSAMPLE_DIR}/${SAMPLE}_${DEPTH_IL}.R2.fq"
+
+        OUT_DIR="${ROOTDIR}/results/assemblies/${SAMPLE}/spades_short/IL${DEPTH_IL}"
+        
+        # Check if it has been run before
+        if [[ ! -s ${ILLUMINA1_FQ} || ! -s ${ILLUMINA2_FQ} ]]; then
+            echo "SPADES for ${SAMPLE} at ${DEPTH_IL} cannot run because the input files do not exist. Skipping."
+            continue
+        elif [[ -s "${OUT_DIR}/spades_short_${SAMPLE}_IL${DEPTH_IL}.fasta" ]]; then
+            # echo "SPADES for ${SAMPLE} at ${DEPTH_IL} already completed. Skipping."
+            continue
+        elif [[ -s "${ROOTDIR}/results/assemblies_results/${SAMPLE}/spades_short_${SAMPLE}_IL${DEPTH_IL}.fasta" ]]; then
+            # echo "Hifiasm for ${SAMPLE} at ${DEPTH_NP} already completed. Skipping.
+            continue
+        else
+            if squeue --me --format "%.100j" | grep -q spades_short_${SAMPLE}_IL${DEPTH_IL} ; then
+                # echo "SPADES for ${SAMPLE} at ${DEPTH_IL} is already running. Skipping."
+                continue
+            elif [[ $(squeue --me | wc -l) -ge 5000 ]]; then
+                    echo_overwrite_2 "You have reached the maximum number of jobs (5000). Exiting."
+                    exit 1
+            else
+                new_jobs=$((new_jobs + 1))
+                # echo "Submitting SPADES Short for ${SAMPLE} at ${DEPTH_IL}"
+                sed -i "/spades_short_${SAMPLE}_IL${DEPTH_IL}/d" logs/slurm_jobid/spades_short_slurm_jobid.csv
+                rm -rf ${OUT_DIR}
+            fi
+        fi
+
+sbatch <<- EOF | sed -e "s/Submitted batch job /spades_short_${SAMPLE}_IL${DEPTH_IL},/" -e "s/$/,$(date +'%Y-%m-%d %H:%M:%S')/" >> logs/slurm_jobid/spades_short_slurm_jobid.csv
+#!/bin/env bash
+
+#SBATCH --job-name=spades_short_${SAMPLE}_IL${DEPTH_IL}
+#SBATCH --output=logs/spades_short/spades_short_${SAMPLE}_IL${DEPTH_IL}_%j.out
+#SBATCH --time=1-00
+#SBATCH --ntasks=10
+#SBATCH --mem=50GB
+#SBATCH --partition=$(shuf -n 1 -e general nova nova_ff)
+#SBATCH --mail-type=FAIL
+#SBATCH --mail-user=gabriel.silva@auburn.edu
+#SBATCH --no-requeue
+
+# Run Spades Short
+spades.py \
+    --threads 10 \
+    -1 ${ILLUMINA1_FQ} \
+    -2 ${ILLUMINA2_FQ} \
+    -o ${OUT_DIR}
+
+if [[ ! -s ${OUT_DIR}/scaffolds.fasta ]]; then
+    echo "SPADES Hybrid failed for ${SAMPLE} at NP${DEPTH_NP}_IL${DEPTH_IL}. Exiting."
+    exit 1
+fi
+
+ln -sf ${OUT_DIR}/scaffolds.fasta ${OUT_DIR}/spades_short_${SAMPLE}_IL${DEPTH_IL}.fasta
+EOF
+    done
+done
+
+
