@@ -1,4 +1,9 @@
-# Nanopore Benchmark project
+# Fungi Assembly Benchmarking
+
+This repository stores the scripts used for two benchmarking tracks:
+
+- **Empirical**: assembly benchmarking using real sequencing data.
+- **Simulated**: assembly benchmarking using simulated short_reads/Nanopore reads.
 
 ## Software versions
 
@@ -9,276 +14,118 @@
 - **Samtools**: 1.22
 - **Flye**: 2.9.6
 - **Hifiasm**: 0.25.0
-- **Medaka**: 2.1.0
 - **Pilon**: 1.24
 - **MaSuRCA**: 4.1.4
 - **Canu**: 2.3
 - **SPAdes**: 4.2.0
-- **Abyss**: 2.3.10
+- **ABySS**: 2.3.10
 - **Raven**: 1.8.3
 
-## Data description
+## Data source summary
+
+- `assembly_summary.txt` from NCBI RefSeq fungi was downloaded on **2025-07-29**.
+- Complete fungal reference genomes were then downloaded and used for simulation/benchmarking.
+
+## Pipeline layout
+
+- `Empirical/00_Setup`: real-read preprocessing, QC, and subsampling.
+- `Empirical/01_Assembly`: empirical assemblies and polishing runs.
+- `Empirical/02_Processing`: empirical QUAST/BUSCO and aggregation.
+- `Empirical/Misc`: helper scripts to consolidate outputs and track completion.
+- `Simulated/00_Setup`: download references and simulate/subsample reads.
+- `Simulated/01_Assembly`: simulated-read assembly and polishing runs.
+- `Simulated/02_Processing`: simulated QUAST/BUSCO + reference annotation helpers.
+
+---
+
+## File index and purpose
+
+### Empirical
+
+#### Empirical/00_Setup
+
+- `runMe_chopper.sh`: filters raw Nanopore reads with Chopper (minimum length) to produce cleaned long-read inputs.
+- `runMe_coverage_calc.sh`: maps reads back to references/assemblies and computes coverage/depth/statistics (samtools/minimap2/BWA workflows).
+- `runMe_fastp.sh`: trims and filters empirical short_reads paired-end reads using fastp.
+- `runMe_fastqc.sh`: runs FastQC on subsampled read sets and summarizes total bases per sample/depth.
+- `runMe_get_info.R`: parses fastp/KMC-GenomeScope outputs and generates sample-level depth and downsampling-factor summary tables.
+- `runMe_kmc-genomescope_chopper.sh`: runs KMC + GenomeScope on Chopper-filtered Nanopore reads for genome-size/error modeling.
+- `runMe_kmc-genomescope_short.sh`: runs KMC + GenomeScope on short_reads reads.
+- `runMe_kmc-genomescope_np.sh`: runs KMC + GenomeScope on Nanopore reads.
+- `runMe_nanoplot.sh`: runs NanoPlot to summarize Nanopore read quality/length distributions.
+- `runMe_nanopore_check.sh`: checks for Nanopore FASTQ availability per sample and extracts/normalizes selected FASTQ inputs.
+- `runMe_subsampler.sh`: subsamples short_reads, Nanopore, and Chopper FASTQs to target depths using seqtk.
+- `runMe_uncompresser.sh`: decompresses trimmed short_reads FASTQ files to benchmark-ready uncompressed `.fq` files in parallel.
+- `sbatchMe_seqkit_stats.sh`: compute seqkit stats for all subsampled FASTQ files.
+- `sourceMe_configs.sh`: shared configuration/utilities (sample lists, depth arrays, program lists, SLURM helpers, progress bar, env loader).
+
+#### Empirical/01_Assembly
+
+- `runMe_abyss_short.sh`: submits short_reads-only ABySS assemblies across samples/depths.
+- `runMe_flye.sh`: submits Flye long-read assemblies (multiple overlap parameter values) from Chopper-filtered reads.
+- `runMe_polypolish.sh`: polishes Flye assemblies using short_reads alignments and Polypolish.
+- `runMe_spades_hybrid.sh`: runs hybrid SPAdes with paired short_reads + Nanopore inputs.
+- `runMe_spades_short.sh`: runs short_reads-only SPAdes assemblies.
+
+#### Empirical/02_Processing
+
+- `quast_busco_merger.R`: incrementally merges per-assembly QUAST and BUSCO outputs into unified summary tables.
+- `runMe_busco.sh`: submits BUSCO completeness analysis jobs for assembled genomes/reference inputs.
+- `runMe_quast_busco_merger.sh`: executes the R merger script for QUAST/BUSCO consolidated outputs.
+- `runMe_quast.sh`: submits QUAST jobs for all configured assemblies and depth combinations.
+- `runMe_sacct.sh`: extracts SLURM accounting metrics for submitted jobs and produces combined sacct tables.
+- `stats_figures.qmd`: generates statistical analyses and figures for the empirical assembly benchmarking results.
+
+#### Empirical/Misc
+
+- `runMe_clean_assemblies.sh`: copies finalized assembly/QC outputs into centralized results folders and optionally compresses/removes intermediates.
+- `runMe_count_complete.sh`: counts completed vs pending assemblies and associated QUAST/BUSCO outputs by program.
+
+### Simulated
+
+#### Simulated/00_Setup
+
+- `runMe_download_genomes.sh`: downloads RefSeq fungal assembly summary and reference genome FASTA files.
+- `runMe_iss_simulator.sh`: simulates short_reads reads with InSilicoSeq.
+- `runMe_nanosim_simulator.sh`: simulates Nanopore reads with NanoSim.
+- `runMe_subsampler.sh`: subsamples simulated short_reads and Nanopore FASTQs to target coverage fractions.
+
+#### Simulated/01_Assembly
+
+- `runMe_abyss_short.sh`: runs short_reads-only ABySS (`abyss-short`) assemblies.
+- `runMe_abyss-hybrid.sh`: runs ABySS hybrid assemblies with short_reads + Nanopore inputs.
+- `runMe_canu.sh`: runs Canu long-read assemblies.
+- `runMe_flye.sh`: runs Flye long-read assemblies.
+- `runMe_hifiasm.sh`: runs Hifiasm in ONT mode.
+- `runMe_masurca.sh`: runs MaSuRCA hybrid assemblies.
+- `runMe_miniasm.sh`: runs Minimap2 + Miniasm long-read assembly workflow.
+- `runMe_nextdenovo.sh`: runs NextDenovo assemblies using generated run configs.
+- `runMe_pilon.sh`: polishes Flye assemblies with Pilon using short_reads alignments.
+- `runMe_polypolish.sh`: polishes Flye assemblies with Polypolish using paired short_reads alignments.
+- `runMe_racon_bwa.sh`: polishes Flye assemblies with Racon using BWA-based read alignments.
+- `runMe_racon_minimap.sh`: polishes Flye assemblies with Racon using Minimap2-based alignments.
+- `runMe_raven.sh`: runs Raven long-read assemblies.
+- `runMe_spades_hybrid.sh`: runs hybrid SPAdes assemblies.
+- `runMe_spades_short.sh`: runs short_reads-only SPAdes assemblies.
+
+#### Simulated/02_Processing
+
+- `runMe_busco.sh`: submits BUSCO analyses for simulated assembly outputs.
+- `runMe_edta.sh`: runs EDTA transposable-element annotation on selected reference genomes.
+- `runMe_genemark.sh`: runs GeneMark-ES/Fungal gene prediction on reference genomes.
+- `runMe_quast.sh`: submits QUAST evaluation for simulated assemblies/reference genomes.
+- `runMe_sacct.sh`: compiles SLURM resource/accounting summaries for simulated workflow jobs.
+- `stats_figures.qmd`: generates statistical figures and analyses for the simulated data.
+
+#### Simulated/02_Processing/Summarizer
+
+- `quast_busco_merger.R`: merges simulated QUAST and BUSCO outputs into unified reports.
+- `runMe_quast_busco_merger.sh`: launches the simulated QUAST/BUSCO merger R script.
+
+---
 
-Downloaded 'assembly_summary.txt' from NCBI Refseq on 2025-07-29 then downloaded the assemblies for all Complete Genomes.
+## Notes
 
-## Assembly strategies
-
-Genome Assembly Approaches:
-
-Depths to be explored = ("100x" "75x" "50x" "35x" "10x")
-Depths to be explored = ("100x" "90x" "80x" "70x" "60x" "50x" "40x" "30x" "20x" "10x")
-
-- **Illumina-only Assemblers**: SPAdes, ABySS
-- **Nanopore-only Assemblers**: Flye, Canu, Hifiasm, Raven
-- **Hybrid Assemblers**: ABySS Hybrid, MaSuRCA, hybridSPAdes
-- **Nanopore +  Illumina polishing**: Best Nanopore-only Assembler + Pilon, Polypolish, Racon
-
-## Scripts
-
-All scripts are under the folder `scripts/`.
-
-The scripts to prepare the reads are run as follows:
-
-1. `runMe_download_genomes.sh`: Downloads the assemblies from NCBI Refseq.
-2. `runMe_iss_simulator.sh`: Simulates Illumina reads using InSilicoSeq.
-3. `runMe_nanosim_simulator.sh`: Simulates Nanopore reads using Nanosim.
-4. `runMe_coverage_calc.sh`: Calculates the coverage of the simulated reads.
-5. `runMe_subsampler.sh`: Subsamples the simulated reads.
-
-The following scripts are used to run the assembly strategies and can be run in any order:
-
-- `runMe_flye.sh`: Assembles the subsampled reads using Flye.
-- `runMe_hifiasm.sh`: Assembles the subsampled reads using Hifiasm.
-- `runMe_spades_hybrid.sh`: Assembles the subsampled reads using hybridSPAdes.
-- `runMe_spades_short.sh`: Assembles the Illumina reads using SPAdes.
-- `runMe_canu.sh`: Assembles the subsampled reads using Canu.
-- `runMe_pilon.sh`: Polishes the Flye assemblies using Pilon.
-- `runMe_racon.sh`: Polishes the Flye assemblies using Racon.
-- `runMe_abyss.sh`: Assembles the Illumina reads using ABySS.
-- `runMe_velvet.sh`: Assembles the Illumina reads using Velvet.
-- `runMe_masurca.sh`: Assembles the subsampled reads using MaSuRCA.
-- `runMe_unicycler.sh`: Assembles the subsampled reads using Unicycler.
-- `runMe_medaka.sh`: Polishes the Flye assemblies using Medaka.
-- `runMe_autocycler.sh`: Assembles the subsampled reads using Autocycler.
-
-Finally, the script `runMe_quast.sh` is used to evaluate the assemblies using QUAST.
-
-The script `runMe_sacct.sh` is used to track the jobs and resources used during the assembly process. It collects job IDs and their associated information from SLURM.
-
-## Simplified code
-
-### Jobs resources tracking
-
-```bash
-sacct --format=JobID,JobName%100,Start,End,Elapsed,ReqMem,MaxRSS,ReqCPUS,NCPUS,CPUTime,CPUTimeRAW,ExitCode -P --delimiter="," -j $JOBID_LIST > ${JOBID_FILE%_jobid.csv}_sacct.csv
-
-/usr/bin/time --format="%e,%U,%S,%P,%M,%t" -o logs/time_flye.txt flye --threads 10 --nano-hq [NANOPORE_FASTQ] --out-dir [OUTPUT_DIR]
-```
-
-### InSilicoSeq
-
-```bash
-iss generate --cpus 10 \
-    --draft $genome \
-    --model novaseq \
-    --n_reads $reads_number \
-    --output $ROOTDIR/simulated_data/${genome_name}/illumina/${genome_name}
-```
-
-### Nanosim
-
-```bash
-simulator.py genome \
-    --model_prefix "$ROOTDIR/models/human_giab_hg002_sub1M_kitv14_dorado_v3.2.1/training" \
-    --ref_g "$genome" \
-    --output "$ROOTDIR/simulated_data/$genome_name/nanopore/$genome_name" \
-    --coverage 100 \
-    --fastq \
-    --num_threads 10
-```
-
-### Verify coverage of simulated reads
-
-```bash
-
-# For Illumina reads
-RUNNER="bwa-mem2 index [REFERENCE_FASTA] && bwa-mem2 mem -t 10 [REFERENCE_FASTA_IDX] [ORIGINAL_FASTQ]"
-# For Nanopore reads
-RUNNER="minimap2 -t 10 -ax map-ont [REFERENCE_FASTA] [ORIGINAL_FASTQ]"
-
-# Run the coverage calculation
-$RUNNER | \
-samtools sort -@ 5 -o [ALIGNED_BAM] -
-
-# Indexing BAM file
-samtools index --threads 10    [ALIGNED_BAM]
-
-# Calculating samtools depth
-samtools depth    --threads 10 [ALIGNED_BAM] > [OUTPUT_DEPTH]
-
-# Calculating samtools flagstat
-samtools flagstat --threads 10 [ALIGNED_BAM] > [OUTPUT_FLAGSTAT]
-
-# Calculating samtools stats
-samtools stats    --threads 10 [ALIGNED_BAM] > [OUTPUT_STATS]
-
-# Calculating samtools idxstats
-samtools idxstats --threads 10 [ALIGNED_BAM] > [OUTPUT_IDXSTATS]
-
-# Calculating samtools coverage
-samtools coverage              [ALIGNED_BAM] > [OUTPUT_COVERAGE]
-```
-
-### Subsampler
-
-```bash
-seqtk sample -s 10 [ORIGINAL_FASTQ] [DEPTH_FRACTION] > [SUBSAMPLED_FASTQ]
-```
-
-### Flye
-
-```bash
-flye \
-    --threads 10 \
-    --nano-hq [NANOPORE_FASTQ] \
-    --out-dir [OUTPUT_DIR] 
-```
-
-### Hifiasm
-
-```bash
-hifiasm \
-    -t 10 \
-    --ont \
-    -o [OUTPUT] \
-    [NANOPORE_FASTQ]
-```
-
-#### Notes
-
-Hifiasm_GCF_000687475.1_ASM68747v2_NP10xHifiasm_GCF_000687475.1_ASM68747v2_NP10x could not be run. Gives the error:
-
-```text
-/cm/local/apps/slurm/var/spool/job3160348/slurm_script: line 13:  4712 Floating point exception hifiasm -t 10 --ont -o /scratch/gas0042/nanopore_benchmark/results/assemblies/GCF_000687475.1_ASM68747v2/hifiasm/10x/hifiasm_GCF_000687475.1_ASM68747v2_NP10x /scratch/gas0042/nanopore_benchmark/simulated_data/subsampled/GCF_000687475.1_ASM68747v2/GCF_000687475.1_ASM68747v2_10x.nanopore.fq
-```
-
-### Pilon
-
-```bash
-# Index the FLYE assembly with BWA
-bwa-mem2 index \
-    -p [IDX_PREFIX] \
-    [FLYE_ASSEMBLY]
-
-# Align the Illumina reads to the FLYE assembly and sort the BAM file
-bwa-mem2 mem \
-    -t 10 \
-    [IDX_PREFIX] \
-    [ILLUMINA_FASTQ_1] \
-    [ILLUMINA_FASTQ_2] | \
-    samtools view -b - | samtools sort > [ALIGNED_BAM]
-
-# Index the BAM file
-samtools index [ALIGNED_BAM]
-
-# Run Pilon to polish the FLYE assembly using the Illumina reads
-pilon \
-    --changes \
-    --genome [FLYE_ASSEMBLY] \
-    --frags [ALIGNED_BAM] \
-    --output [OUTPUT_PREFIX]
-```
-
-### Racon
-
-### Notes
-
-Racon needs the Illumina reads to be in a single file, so the paired-end reads need to be combined first. The following command combines the paired-end reads by changing the suffix `/1` and `/2` to `_1` and `_2`, respectively. Therefore while the reads are still technically paired-end, they are treated as single-end reads by Racon.
-
-```bash
-cat [ILLUMINA_FASTQ_1] [ILLUMINA_FASTQ_2] | awk '{ sub(/\/[12]$/, "_" substr(\$0, length, 1)); print }' > [ILLUMINA_FASTQ_COMBINED]
-
-# Index the FLYE assembly with BWA
-bwa-mem2 index \
-    -p [IDX_PREFIX] \
-    [FLYE_ASSEMBLY]
-
-# Align the Illumina reads to the FLYE assembly and sort the BAM file
-bwa-mem2 mem \
-    -t 10 \
-    ${BWA_IDX} \
-    ${SAMPLE}_${DEPTH_IL}.combined.fq > ${BWA_SAM}
-
-# Run Racon to polish the FLYE assembly using the Illumina reads
-racon \
-    -t 10 \
-    ${SAMPLE}_${DEPTH_IL}.combined.fq \
-    ${BWA_SAM} \
-    ${FLYE_ASM} \
-    > ${RACON_OUT}.fasta
-```
-
-### Canu
-
-Canu needs genome size estimation, so I used the reported genome size from NCBI Refseq. In real scenarios, you might want to use a tool like `jellyfish` or `kmergenie` to estimate the genome size from the reads.
-
-Canu's minimum coverage is set to 10x, it was lowered to 5x for this benchmark since some of the 10x would be reported as "not enough coverage".
-
-```bash
-canu \
-    -p [OUTPUT_PREFIX] \
-    -d [OUTPUT_DIR] \
-    genomeSize=[GENOME_SIZE] \
-    -nanopore [NANOPORE_FASTQ] \
-    useGrid=false \
-    minInputCoverage=5 \
-    maxThreads=10 \
-    maxMemory=120
-```
-
-### AbySS
-
-Running Abyss installed from Bioconda was raising errors with the MPI library, then it would get stuck in `Finding adjacent k-mer...`. The error was:
-
-```text
-WARNING: There was an error initializing an OpenFabrics device.
-
-  Local host:   node026
-  Local device: mlx5_0
-```
-
-So I installed most dependencies with Mamba and then compiled Abyss from source.
-
-#### Instalation
-
-```bash
-#Mamba env preparation
-mamba create -n Abyss_man
-mamba activate Abyss_man
-mamba install conda-forge::boost conda-forge::openmpi bioconda::google-sparsehash bioconda::btllib bioconda::samtools conda-forge::compilers conda-forge::pigz conda-forge::zsh conda-forge::autoconf conda-forge::automake bioconda::bwa
-
-#Abyss compilation
-git clone git@github.com:bcgsc/abyss.git #Version 2.3.10
-cd abyss
-./autogen.sh
-mkdir build
-cd build
-../configure --prefix=/mmfs1/home/gas0042/miniforge3/envs/Abyss_man --enable-maxk=96 --disable-werror
-make
-make install
-```
-
-Running Abyss-short:
-
-### Racon
-
-### Shasta
-
-#### Notes
-
-Shasta's logs states 'This run used options "--memoryBacking 4K --memoryMode anonymous". This could result in longer run time.
-For faster assembly, use "--memoryBacking 2M --memoryMode filesystem" (root privilege via sudo required).
-Therefore the results of this run should not be used for the purpose of benchmarking assembly time.
-However the memory options don't affect assembly results in any way.'
-
-Also, the cutoff for read size is set to 10kb by default.
+- Most scripts are SLURM submission wrappers designed for HPC execution.
+- Paths in scripts are currently hard-coded to the original project environment under `/scratch/gas0042/...`.
+- Shared helper functions and core arrays are defined in each pipeline’s `sourceMe_configs.sh` file (empirical file is included in this repository).

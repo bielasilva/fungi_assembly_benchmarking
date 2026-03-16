@@ -1,0 +1,2443 @@
+---
+title: "Assembly_benchmark"
+
+format:
+  html:
+    grid: 
+      body-width: 1000px
+      sidebar-width: 200px
+      margin-width: 200px
+    toc: true
+---
+
+## Setup
+
+```{r}
+#| label: setup
+#| echo: false
+
+# Import libraries
+pkgs <- c("tidyverse", "janitor", "scales", "rlang", "ggrepel", "broom.mixed","emmeans",
+          "flextable", "ggpp", "knitr", "kableExtra", "ggpubr", "ggExtra", "ggpmisc", "see")
+
+# install.packages(pkgs[!pkgs %in% installed.packages()[,"Package"]])
+lapply(pkgs, library, character.only=TRUE)
+
+# Set global chunk options
+knitr::opts_chunk$set(results='hold', message=FALSE,
+                      warning=FALSE, fig.show="hold",
+                      out.width="100%", fig.align="center",
+                      fig.width=10, fig.height=5,
+                      dev=c("png", "svg", "pdf"), dpi=600)
+
+
+```
+
+## Load Functions
+
+```{r}
+#| label: load_functions
+
+# Define helper functions
+
+`%notin%` <- Negate(`%in%`)
+
+# 95% Confidence Interval function
+
+CI95 <- function(stde,sample.n){
+  alpha <- 0.05
+  degrees.freedom <- sample.n - 1
+  t.score <- qt(p=alpha/2, df=degrees.freedom,lower.tail=F)
+  CI <- t.score * stde
+  return(CI)
+}
+
+# Set labels for plotting
+display_labels <- c("flye"="Flye",
+                      "hifiasm"="Hifiasm",
+                      "canu"="Canu",
+                      "raven"="Raven",
+                      "shasta"="Shasta",
+                      "nextdenovo"="NextDenovo",
+                      "miniasm"="Miniasm",
+                      "spades_short"="SPAdes Short",
+                      "abyss_short"="ABySS Short",
+                      "abyss_hybrid"="ABySS Hybrid",
+                      "masurca"="MaSuRCA",
+                      "spades_hybrid"="SPAdes Hybrid",
+                      "pilon"="Pilon",
+                      "polypolish"="Polypolish",
+                      "racon"="Racon (BWA)",
+                      "racon-mp2"="Racon (Minimap2)",
+                      "flye_pilon"="Flye + Pilon",
+                      "flye_polypolish"="Flye + Polypolish",
+                      "flye_racon"="Flye + Racon (BWA)",
+                      "flye_racon-mp2"="Flye + Racon (Minimap2)")
+
+# Set color palette
+
+colors_programs <- c("flye"="#59A14F",
+                     "hifiasm"="#1F83B4",
+                     "canu"="#C7519C",
+                     "raven"="#A52A2A",
+                     "shasta"="#8B7355",
+                     "nextdenovo"="#8C564B",
+                     "miniasm"="#7B68EE",
+                     "spades_short"="#EDC948",
+                     "abyss_short"="#FF7F0E",
+                     
+                     "abyss_hybrid"="#FFAA0E",
+                     "masurca"="#8B4513",
+                     "spades_hybrid"="#CD1076",
+                     
+                     "pilon"="#B22222",
+                     "polypolish"="#00688B",
+                     "racon"="#008B00",
+                     "racon-mp2"="#FF7F0E",
+                     "flye_pilon"="#B22222",
+                     "flye_polypolish"="#00688B",
+                     "flye_racon"="#008B00",
+                     "flye_racon-mp2"="#FF7F0E")
+
+# Parse elapsed time function (from sacct)
+parse_elapsed <- function(x) {
+  x <- as.character(x)
+  x <- stringr::str_trim(x)
+  ifelse(is.na(x) | x == "NA", NA_real_,
+         ifelse(stringr::str_detect(x, "^[0-9]+-"),
+                {
+                  m <- stringr::str_match(x, "^(\\d+)-(\\d{1,2}):(\\d{2}):(\\d{2})")
+                  d <- as.numeric(m[, 2]); h <- as.numeric(m[, 3])
+                  mi <- as.numeric(m[, 4]); s <- as.numeric(m[, 5])
+                  d*86400 + h*3600 + mi*60 + s
+                },
+                {
+                  m <- stringr::str_match(x, "^(\\d{1,2}):(\\d{2}):(\\d{2})")
+                  h <- as.numeric(m[, 2]); mi <- as.numeric(m[, 3]); s <- as.numeric(m[, 4])
+                  h*3600 + mi*60 + s
+                })
+  )
+}
+
+# Combine stats for polishing approaches
+combine_programs <- function(df, prog1, prog2) {
+  # # Define variables for testing
+  # df <- unified
+  # prog1 <- "flye"
+  # prog2 <- "pilon"
+  
+  combo_name <- paste0(prog1, "_", prog2)
+  # collapse duplicates defensively
+  p1 <- df %>% filter(!is.na(n50)) %>%
+    filter(program == !!prog1) 
+
+  p2 <- df %>% filter(!is.na(n50)) %>%
+    filter(program == !!prog2) 
+
+  # join on (sample, depth_np); keep depth_il from prog02
+  combo <- p2 %>%
+    right_join(p1, by=c("sample", "depth_np")) %>%
+    transmute(
+      strategy="polished",
+      program=!!combo_name,
+      sample,
+      depth_np,
+      depth_il=depth_il.x,
+      n50=n50.x,
+      ng50=ng50.x,
+      reference_length=reference_length.x,
+      ref_size_mbp=ref_size_mbp.x,
+      ref_size=ref_size.x,
+      ref_contigs=ref_contigs.x,
+      gc_percent=gc_percent.x,
+      busco_complete=busco_complete.x,
+      busco_complete_diff=busco_complete_diff.x,
+      genome_fraction_percent=genome_fraction_percent.x,
+      mism_100kbp=mism_100kbp.x,
+      indel_100kbp=indel_100kbp.x,
+      length_err_pct=length_err_pct.x,
+      maxrss_gb=pmax(maxrss_gb.x, maxrss_gb.y),
+      ram_per_mb=pmax(ram_per_mb.x, ram_per_mb.y),
+      time_per_mb=time_per_mb.x + time_per_mb.y,
+      elapsed_sec=elapsed_sec.x + elapsed_sec.y,
+    )
+  
+  return(combo)
+}
+
+# Data extraction and cleaning function
+extract_data_simulated <- function(sacct_file, metrics_file, genome_sizes) {
+
+  # # # Define file paths for testing
+  # sacct_file   <- "files/all_sacct.csv"
+  # metrics_file <- "files/quast_busco_results.tsv"
+  # genome_sizes <- "files/ref_genome_metrics.csv"
+  
+  # Define strategies
+  long_reads_strategy  <- c("flye", "hifiasm", "canu", "raven", "shasta", "nextdenovo", "miniasm")
+  short_reads_strategy <- c("spades_short", "abyss", "abyss_short")
+  hybrid_strategy      <- c("spades_hybrid", "masurca", "abyss_hybrid")
+  polished_strategy    <- c("pilon", "polypolish", "racon", "racon-mp2")
+
+  raw_sacct <- read_csv(sacct_file, col_types=cols()) %>% 
+    mutate(JobName=str_replace_all(JobName, pattern=c("Hifiasm"="hifiasm",
+                                                      "abyss-"="abyss_",
+                                                          "_FLYE"  ="_NP",
+                                                          "_10x"   ="_NP10x",
+                                                          "_15x"   ="_NP15x",
+                                                          "_20x"   ="_NP20x",
+                                                          "_25x"   ="_NP25x",
+                                                          "_30x"   ="_NP30x",
+                                                          "_35x"   ="_NP35x",
+                                                          "_40x"   ="_NP40x",
+                                                          "_50x"   ="_NP50x",
+                                                          "_60x"   ="_NP60x",
+                                                          "_75x"   ="_NP75x",
+                                                          "_100x"  ="_NP100x")))
+  
+  raw_metrics <- read_tsv(metrics_file, col_types=cols()) %>% 
+    rename(JobName=Assembly) %>%
+    mutate(JobName=str_replace_all(JobName, pattern=c("Hifiasm"="hifiasm",
+                                                      "abyss-"="abyss_",
+                                                          "_FLYE"  ="_NP",
+                                                          "_10x"   ="_NP10x",
+                                                          "_15x"   ="_NP15x",
+                                                          "_20x"   ="_NP20x",
+                                                          "_25x"   ="_NP25x",
+                                                          "_30x"   ="_NP30x",
+                                                          "_35x"   ="_NP35x",
+                                                          "_40x"   ="_NP40x",
+                                                          "_50x"   ="_NP50x",
+                                                          "_60x"   ="_NP60x",
+                                                          "_75x"   ="_NP75x",
+                                                          "_100x"  ="_NP100x")))
+  
+  genome_sizes_df <- read_csv(genome_sizes, col_types=cols()) %>% 
+    dplyr::select(Sample, RefSizeMbp=size_mbp, RefSize=size_bp, RefContigs=contigs)
+  
+  raw_metrics_reference <- raw_metrics %>%
+    filter(str_detect(JobName, "reference")) %>% 
+    select(JobName,
+           busco_complete_ref     =busco_complete,
+           busco_single_copy_ref  =busco_single_copy,
+           busco_multi_copy_ref   =busco_multi_copy,
+           busco_fragmented_ref   =busco_fragmented,
+           busco_missing_busco_ref=busco_missing_busco,
+           busco_avg_identity_ref =busco_avg_identity,
+           busco_stop_codon_ref   =busco_stop_codon) %>%
+    extract( # Extract relevant columns from JobName
+      col  =JobName,
+      into =c("Program", "Sample"),
+      regex="^(.+?)(?=_GCF)_(GCF.+?)?$"
+    ) %>% select(! Program )
+  
+  # Split the JobID into two parts: the main job ID and the batch job ID
+  main <- raw_sacct %>% filter(!str_detect(JobID, "\\.batch$"))
+  
+  batch <- raw_sacct %>% 
+    filter(str_detect(JobID, "\\.batch$")) %>%
+    mutate(JobID=str_remove(JobID, "\\.batch$")) %>%
+    select(JobID, MaxRSS_batch=MaxRSS)
+  
+  # Left-join the batch MaxRSS onto the main jobs
+  unified <- main %>%
+    left_join(batch, by="JobID") %>%
+    mutate(
+      MaxRSS=coalesce(MaxRSS_batch, MaxRSS),
+      MaxRSS=parse_number(MaxRSS),
+      MaxRSS_GB=MaxRSS / (1024^2)
+    ) %>%
+    select(-MaxRSS_batch) %>%
+    group_by(JobName) %>%
+    slice_max(Start, n=1, with_ties=FALSE) %>%
+    ungroup() %>%
+    full_join(raw_metrics, by="JobName") %>% # Join with metrics
+    filter(! str_detect(JobName, "reference")) %>%
+    extract( # Extract relevant columns from JobName
+      col  =JobName,
+      into =c("Program", "Sample", "depthNP", "depthIL"),
+      regex="^(.+?)(?=_GCF)_(GCF.+?)(?:_NP(\\d+x))?(?:_IL(\\d+x))?$"
+    ) %>%
+    full_join(genome_sizes_df, by="Sample") %>% # Join with genome sizes
+    full_join(raw_metrics_reference, by="Sample") %>% # Join with reference metrics
+    mutate(
+      Program=str_to_lower(Program),
+      depthNP=replace_na(parse_number(depthNP), 0),
+      depthIL=replace_na(parse_number(depthIL), 0),
+      Strategy=case_when(
+        Program %in% long_reads_strategy ~ "long_reads",
+        Program %in% short_reads_strategy ~ "short_reads",
+        Program %in% hybrid_strategy ~ "hybrid",
+        Program %in% polished_strategy ~ "polished"
+      ),
+      # Elapsed_sec=parse_elapsed(as.character(Elapsed)),
+      Elapsed_sec=dplyr::coalesce(suppressWarnings(as.numeric(Elapsed)), parse_elapsed(Elapsed)),
+      Elapsed_min=Elapsed_sec / 60,
+      MaxRSS_per_mb=MaxRSS_GB / RefSizeMbp, # Calculate MaxRSS per Mb of genome size
+      Elapsed_per_mb=Elapsed_sec / RefSizeMbp, # Calculate Elapsed time per Mb of genome size
+    ) %>%
+    clean_names() %>% ## filter(start != "None") %>% # Remove jobs that haven't ended
+    mutate(strategy=factor(strategy, levels=c("short_reads","long_reads","hybrid","polished")),
+         program =factor(program),
+         sample  =factor(sample),
+         ng50    = as.numeric(ng50),
+         depth_eff=case_when(
+          strategy == "short_reads" ~ depth_il,
+          strategy == "long_reads"  ~ depth_np,
+          strategy == "hybrid"      ~ depth_il + depth_np,
+          strategy == "polished"    ~ depth_il + depth_np
+         ),
+         # Fidelity to truth
+         length_err_pct=100 * (total_length - reference_length) / reference_length,
+         gc_err_abs    =abs(gc_percent - reference_gc_percent),
+         busco_complete_diff   =busco_complete - busco_complete_ref,
+         busco_single_copy_diff=busco_single_copy - busco_single_copy_ref,
+         busco_multi_copy_diff =busco_multi_copy - busco_multi_copy_ref
+           ) %>%
+    rename(
+      maxrss_gb=max_rss_gb,
+      time_per_mb=elapsed_per_mb,
+      ram_per_mb=max_rss_per_mb,
+      mism_100kbp=number_mismatches_per_100_kbp,
+      indel_100kbp=number_indels_per_100_kbp,
+      misassemblies=number_misassemblies )
+  
+  
+  df_flye_pilon <- combine_programs(unified, "flye", "pilon")
+  df_flye_polypolish <- combine_programs(unified, "flye", "polypolish")
+  df_flye_racon <- combine_programs(unified, "flye", "racon")
+  df_flye_racon_mp2 <- combine_programs(unified, "flye", "racon-mp2")
+  
+  unified_full <- bind_rows(unified, df_flye_pilon, df_flye_polypolish, df_flye_racon, df_flye_racon_mp2) %>%
+              mutate(program=factor(program))
+  
+  return(unified_full)
+}
+```
+
+## Load Data
+
+```{r}
+#| label: load_data
+
+# Extract and clean data
+# For simulated data
+data <- extract_data_simulated("files/all_sacct.csv",
+                                "files/quast_busco_results.tsv",
+                                "files/ref_genome_metrics.csv") %>% 
+            filter(program != "shasta")
+
+# Load reference genome metrics for simulated data
+reference_metrics <- read_csv("files/ref_genome_metrics.csv", col_types=cols()) %>% 
+  mutate(CDS_mb = CDS / size_mbp,
+          gene_density = gene / size_mbp,
+          cds_per_gene = CDS / gene,
+          intron_mb = intron / size_mbp,
+          mRNA_mb = mRNA / size_mbp,
+          start_codon_mb = start_codon / size_mbp,
+          stop_codon_mb = stop_codon / size_mbp) %>% 
+  janitor::clean_names()
+
+# Save the cleaned data to a CSV file
+write_csv(data, "files/cleaned_metrics.csv")
+
+```
+
+## Summary statistics
+
+```{r}
+#| label: summary_stats
+
+data_stats_single <- data %>%  filter(!is.na(n50)) %>%
+  mutate(number_contigs_small = number_contigs_0_bp - number_contigs_1000_bp) %>%
+  group_by(strategy, program, depth_eff) %>% 
+  summarise(
+    n=n(),
+    med_n50        =median(n50, na.rm=TRUE),
+    med_busco      =median(busco_complete, na.rm=TRUE),
+    med_busco_diff =median(busco_complete_diff, na.rm=TRUE),
+    med_genfrac    =median(genome_fraction_percent, na.rm=TRUE),
+    med_mism       =median(mism_100kbp, na.rm=TRUE),
+    med_indel      =median(indel_100kbp, na.rm=TRUE),
+    med_len_err    =median(length_err_pct, na.rm=TRUE),
+    med_maxrss_gb  =median(maxrss_gb, na.rm=TRUE),
+    med_ram_mb     =median(ram_per_mb, na.rm=TRUE),
+    med_time_mb    =median(time_per_mb, na.rm=TRUE),
+    med_sht_contig =median(number_contigs_small, na.rm=TRUE),
+    mean_n50       =mean(n50, na.rm=TRUE),
+    mean_ng50      =mean(ng50, na.rm=TRUE),
+    mean_busco     =mean(busco_complete, na.rm=TRUE),
+    mean_busco_diff=mean(busco_complete_diff, na.rm=TRUE),
+    mean_genfrac   =mean(genome_fraction_percent, na.rm=TRUE),
+    mean_mism      =mean(mism_100kbp, na.rm=TRUE),
+    mean_indel     =mean(indel_100kbp, na.rm=TRUE),
+    mean_len_err   =mean(length_err_pct, na.rm=TRUE),
+    mean_maxrss_gb =mean(maxrss_gb, na.rm=TRUE),
+    mean_ram_mb    =mean(ram_per_mb, na.rm=TRUE),
+    mean_time_mb   =mean(time_per_mb, na.rm=TRUE),
+    mean_time      =mean(elapsed_sec, na.rm=TRUE),
+    mean_sht_contig=mean(number_contigs_small, na.rm=TRUE),
+    CI_n50         =CI95(sd(n50)/sqrt(n),n),
+    CI_ng50        =CI95(sd(ng50)/sqrt(n),n),
+    CI_busco       =CI95(sd(busco_complete)/sqrt(n),n),
+    CI_busco_diff  =CI95(sd(busco_complete_diff)/sqrt(n),n),
+    CI_genfrac     =CI95(sd(genome_fraction_percent)/sqrt(n),n),
+    CI_mism        =CI95(sd(mism_100kbp)/sqrt(n),n),
+    CI_indel       =CI95(sd(indel_100kbp)/sqrt(n),n),
+    CI_len_err     =CI95(sd(length_err_pct)/sqrt(n),n),
+    CI_maxrss_gb   =CI95(sd(maxrss_gb)/sqrt(n),n),
+    CI_ram_mb      =CI95(sd(ram_per_mb)/sqrt(n),n),
+    CI_time_mb     =CI95(sd(time_per_mb)/sqrt(n),n),
+    CI_time        =CI95(sd(elapsed_sec)/sqrt(n),n),
+    CI_sht_contig  =CI95(sd(number_contigs_small)/sqrt(n),n),
+    .groups="drop"
+  ) %>%
+  mutate(color=colors_programs[as.character(program)]) %>% 
+  filter(strategy %notin% c("hybrid", "polished")) %>% 
+  arrange(depth_eff, program)
+
+data_stats_multi <- data %>% filter(!is.na(n50)) %>% 
+  mutate(number_contigs_small = number_contigs_0_bp - number_contigs_1000_bp) %>%
+  group_by(strategy, program, depth_np, depth_il) %>%
+  summarise(
+    n=n(),
+    med_n50        =median(n50, na.rm=TRUE),
+    med_busco      =median(busco_complete, na.rm=TRUE),
+    med_busco_diff =median(busco_complete_diff, na.rm=TRUE),
+    med_genfrac    =median(genome_fraction_percent, na.rm=TRUE),
+    med_mism       =median(mism_100kbp, na.rm=TRUE),
+    med_indel      =median(indel_100kbp, na.rm=TRUE),
+    med_len_err    =median(length_err_pct, na.rm=TRUE),
+    med_maxrss_gb  =median(maxrss_gb, na.rm=TRUE),
+    med_ram_mb     =median(ram_per_mb, na.rm=TRUE),
+    med_time_mb    =median(time_per_mb, na.rm=TRUE),
+    med_sht_contig =median(number_contigs_small, na.rm=TRUE),
+    mean_n50       =mean(n50, na.rm=TRUE),
+    mean_ng50      =mean(ng50, na.rm=TRUE),
+    mean_busco     =mean(busco_complete, na.rm=TRUE),
+    mean_busco_diff=mean(busco_complete_diff, na.rm=TRUE),
+    mean_genfrac   =mean(genome_fraction_percent, na.rm=TRUE),
+    mean_mism      =mean(mism_100kbp, na.rm=TRUE),
+    mean_indel     =mean(indel_100kbp, na.rm=TRUE),
+    mean_len_err   =mean(length_err_pct, na.rm=TRUE),
+    mean_maxrss_gb =mean(maxrss_gb, na.rm=TRUE),
+    mean_ram_mb    =mean(ram_per_mb, na.rm=TRUE),
+    mean_time_mb   =mean(time_per_mb, na.rm=TRUE),
+    mean_time      =mean(elapsed_sec, na.rm=TRUE),
+    mean_sht_contig=mean(number_contigs_small, na.rm=TRUE),
+    CI_n50         =CI95(sd(n50)/sqrt(n),n),
+    CI_ng50        =CI95(sd(ng50)/sqrt(n),n),
+    CI_busco       =CI95(sd(busco_complete)/sqrt(n),n),
+    CI_busco_diff  =CI95(sd(busco_complete_diff)/sqrt(n),n),
+    CI_genfrac     =CI95(sd(genome_fraction_percent)/sqrt(n),n),
+    CI_mism        =CI95(sd(mism_100kbp)/sqrt(n),n),
+    CI_indel       =CI95(sd(indel_100kbp)/sqrt(n),n),
+    CI_len_err     =CI95(sd(length_err_pct)/sqrt(n),n),
+    CI_maxrss_gb   =CI95(sd(maxrss_gb)/sqrt(n),n),
+    CI_ram_mb      =CI95(sd(ram_per_mb)/sqrt(n),n),
+    CI_time_mb     =CI95(sd(time_per_mb)/sqrt(n),n),
+    CI_time        =CI95(sd(elapsed_sec)/sqrt(n),n),
+    CI_sht_contig  =CI95(sd(number_contigs_small)/sqrt(n),n),
+    .groups="drop"
+  ) %>% 
+  mutate(color=colors_programs[as.character(program)]) %>% { . ->> data_stats_full } %>% 
+  filter(strategy %in% c("hybrid", "polished"), n > 20) %>% 
+  arrange(depth_np, depth_il, program) 
+```
+
+## Reference characteristics
+
+```{r}
+#| label: reference_characteristics
+
+colors <- data.frame (
+  light  = c("lightblue", "darkolivegreen2", "coral" , "mediumorchid2", "turquoise"),
+  dark   = c("darkblue" , "darkolivegreen4", "coral4", "magenta4"     , "turquoise4")
+)
+
+reference_metrics %>% 
+  summarise(
+    min_size_mbp = min(size_mbp),
+    max_size_mbp = max(size_mbp),
+    mean_size_mbp= mean(size_mbp),
+    median_size_mbp= median(size_mbp),
+    sd_size_mbp  = sd(size_mbp),
+    min_contigs  = min(contigs),
+    max_contigs  = max(contigs),
+    mean_contigs = mean(contigs),
+    median_contigs= median(contigs),
+    sd_contigs   = sd(contigs),
+    min_gc_content= min(gc_content),
+    max_gc_content= max(gc_content),
+    mean_gc_content= mean(gc_content),
+    median_gc_content= median(gc_content),
+    sd_gc_content= sd(gc_content),
+    min_gene     = min(gene),
+    max_gene     = max(gene),
+    mean_gene    = mean(gene),
+    median_gene  = median(gene),
+    sd_gene      = sd(gene)
+  ) %>% 
+  kable(format="html", table.attr='class="table table-striped"', caption="Reference Genome Characteristics") %>%
+  kable_styling(full_width=F, position="left", font_size=9)
+  
+plot_metric <- function(metric, y_label, colors) {
+  box_fill <- colors$light
+  jitter_color <- colors$dark
+  
+  reference_metrics %>% 
+    ggplot(aes(x="", y=!!sym(metric))) +
+    # geom_violin(width=1, fill=box_fill) +
+    geom_violinhalf(color=jitter_color, fill=box_fill, alpha=0.7) +
+    geom_boxplot(width=0.3, fill=jitter_color, alpha=0.9, outliers = T) +
+    # geom_jitter(width=0.1, alpha=0.5, color=jitter_color) +
+    labs(x="", y=y_label) +
+    theme_minimal(base_size=10) +
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank())
+}
+
+order_metrics <- c("cds"= "CDS",
+                  "intron"="Introns",
+                  "gene"= "Genes")
+reference_metrics %>% 
+    select(sample, size_mbp, gene, cds, intron, m_rna) %>%
+    pivot_longer(cols=c(gene, cds, intron),
+                 names_to="feature", values_to="count") %>%
+    group_by(sample) %>% mutate(feature=factor(feature, levels=c("cds", "intron", "gene"))) %>%
+  ggplot(aes(x=size_mbp, y=count, fill = feature, color = feature)) +
+  geom_point(alpha=0.7) +
+  stat_poly_line() +
+  stat_poly_eq(label.y = c(0.9,0.85,0.8), label.x = 0.05) +
+  labs(x="", y="# Features (x1000)") +
+  scale_y_continuous(labels=scales::label_number(scale=1/1000),
+                     breaks = seq(0, 150e3, by = 25e3)) +
+  scale_color_manual(values=colors$dark, name="Feature", labels=order_metrics) +
+  scale_fill_manual(values=colors$light, name="Feature", labels=order_metrics) +
+  theme_minimal(base_size=10) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        axis.text.x = element_blank(),
+        plot.margin=unit(c(0,0.25,-0.5,0.25), "cm"),
+        legend.position="top",
+        legend.box="vertical", legend.margin=margin()) -> plot_reference_features
+
+reference_metrics %>% 
+    select(sample, size_mbp) %>% 
+  ggplot(aes(x=size_mbp, y=" ")) +
+  geom_boxplot(fill="darkgoldenrod1", color="darkorange4", width=0.75, outlier.color = "darkorange4") +
+  labs(x="Size (Mbp)", y=" ") +
+  theme_minimal(base_size=10) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_blank(),
+        plot.margin=unit(c(0,0.25,0.25,0.70), "cm")) -> plot_reference_size
+
+ggarrange(
+  ggarrange(plot_reference_features, plot_reference_size,
+          ncol=1, nrow=2, heights = c(5,1)),
+    plot_metric("contigs", "# Contigs", colors[4,]),
+    plot_metric("gc_content", "GC Content (%)", colors[5,]),
+  ncol=3, nrow=1, labels=c("A", "B", "C"), widths = c(5,1,1)) -> plot_reference_characteristics
+```
+
+## Stats Single
+
+```{r}
+#| label: stats_single
+
+sig_stars <- function(p) dplyr::case_when(
+  is.na(p)       ~ "",
+  p < 0.001      ~ "***",
+  p < 0.01       ~ "**",
+  p < 0.05       ~ "*",
+  p < 0.1        ~ ".",
+  TRUE           ~ ""
+)
+
+data_full <- data %>% left_join(reference_metrics, by="sample") %>% 
+    mutate(across(c(size_mbp, gc_content, gene_density, cds_per_gene), scale))
+
+data_single <- data_full %>% filter(strategy %notin% c("hybrid", "polished"))
+
+data_multi <- data_full %>% filter(strategy %in% c("hybrid", "polished"),
+                              program %notin% c("pilon", "polypolish"))
+
+responses <- c(
+    "n50"        ="n50",
+    "ng50"       ="ng50",
+    "busco"      ="busco_complete",
+    "busco_diff" ="busco_complete_diff",
+    "genfrac"    ="genome_fraction_percent",
+    "mism"       ="mism_100kbp",
+    "indel"      ="indel_100kbp",
+    "len_err"    ="length_err_pct",
+    "maxrss_gb"  ="maxrss_gb",
+    "ram_mb"     ="ram_per_mb",
+    "time_mb"    ="time_per_mb",
+    "time"       ="elapsed_sec")
+
+# Make a lmer formula
+mk_form <- function(response, rhs) {
+  as.formula(sprintf("%s ~ %s", response, rhs), env=parent.frame())
+}
+
+fit_program_single <- function(df, response, program_name) {
+
+  dff <- df %>%
+    filter(program == program_name) %>%
+    drop_na(all_of(response))
+
+  fml <- as.formula(paste(
+    response,
+    "~ depth_eff * (size_mbp + gc_content + gene_density + cds_per_gene)",
+    "+ (1 | sample)"
+  ))
+
+  mod <- lme4::lmer(fml, data=dff)
+
+  list(
+    model = mod,
+    anova = anova(mod, type = 3),
+    fixed = broom.mixed::tidy(mod, effects="fixed", conf.int=TRUE),
+    program = program_name,
+    response = response
+  )
+}
+
+fit_block_single <- function(df, response) {
+  
+  dff <- df %>%
+    drop_na(all_of(response))
+  
+  depth_grid <- sort(unique(dff$depth_eff))
+  
+  rhs_single <- "program * depth_eff +
+(ref_size + gc_percent + gene_density + cds_per_gene) +
+program:(ref_size + gc_percent + gene_density + cds_per_gene) +
+depth_eff:(ref_size + gc_percent + gene_density + cds_per_gene) +
+(1 | sample)"
+  
+  fml <- mk_form(response, rhs_single)
+
+  mod <- lme4::lmer(fml, data=dff)
+  
+  anova_global_tbl <- car::Anova(mod, type = 3) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("term") %>%
+  rename(
+    df = Df,
+    chi_sq = Chisq,
+    p_value = `Pr(>Chisq)`
+  ) %>%
+  mutate(
+    signif = sig_stars(p_value),
+    response = response,
+    .before=1
+  ) %>%
+  arrange(p_value)
+
+  emm_depth_by_program <- emmeans::emmeans(
+    mod,
+    ~ depth_eff | program,
+    type = "response"
+  )
+  
+  depth_trends_tbl <- emmeans::emtrends(
+    mod,
+    ~ program,
+    var = "depth_eff"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    rename(
+      slope = depth_eff.trend,
+      df = df,
+      t_ratio = z.ratio,
+      p_value = p.value
+    ) %>%
+    mutate(
+      signif = sig_stars(p_value),
+      response = response,
+      .before=1
+    )
+  
+  emm_prog_by_depth <- emmeans::emmeans(
+    mod,
+    ~ program | depth_eff
+  )
+  
+  prog_pairs_tbl <- emmeans::contrast(
+    emm_prog_by_depth,
+    method = "tukey"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "program_at_depth",
+      .before=1
+    )
+
+  emm_depth_by_program <- emmeans::emmeans(
+    mod,
+    ~ depth_eff | program,
+    at = list(depth_eff = depth_grid)
+  )
+  
+  depth_pairs_tbl <- emmeans::contrast(
+    emm_depth_by_program,
+    method = "tukey"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "depth_within_program",
+      .before=1
+    )
+  
+  genome_trends_tbl <- emmeans::emtrends(
+    mod,
+    ~ program,
+    var = "ref_size"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    mutate(
+      signif = sig_stars(p.value),
+      covariate = "ref_size",
+      response = response,
+      .before=1
+    )
+
+  return(
+    list(
+      model = mod,
+      global_effects = anova_global_tbl,
+      depth_slopes   = depth_trends_tbl,
+      genome_slopes  = genome_trends_tbl,
+      prog_pairs     = prog_pairs_tbl,
+      depth_pairs    = depth_pairs_tbl,
+      fixed = broom.mixed::tidy(mod, effects="fixed", conf.int=TRUE),
+      response = response
+    )
+  )
+}
+
+fits <- purrr::imap(
+  responses,
+  ~ fit_block_single(data_single, response = .x)
+)
+
+tbls <- imap_dfr(
+  fits,
+  ~ tibble(
+    response_id = .y,
+    global_effects = list(.x$global_effects),
+    depth_slopes   = list(.x$depth_slopes),
+    genome_slopes  = list(.x$genome_slopes),
+    prog_pairs     = list(.x$prog_pairs),
+    depth_pairs    = list(.x$depth_pairs)
+  )
+)
+
+all_global_effects <- tbls %>% select(response_id, global_effects) %>% unnest(global_effects)
+all_depth_slopes   <- tbls %>% select(response_id, depth_slopes)   %>% unnest(depth_slopes)
+all_genome_slopes  <- tbls %>% select(response_id, genome_slopes)  %>% unnest(genome_slopes)
+all_prog_pairs     <- tbls %>% select(response_id, prog_pairs)     %>% unnest(prog_pairs)
+all_depth_pairs    <- tbls %>% select(response_id, depth_pairs)    %>% unnest(depth_pairs)
+
+write_csv(all_global_effects, "results/simulated_single_global_effects.csv")
+write_csv(all_depth_slopes, "results/simulated_single_depth_slopes.csv")
+write_csv(all_genome_slopes, "results/simulated_single_genome_slopes.csv")
+write_csv(all_prog_pairs, "results/simulated_single_prog_pairs.csv")
+write_csv(all_depth_pairs, "results/simulated_single_depth_pairs.csv")
+```
+
+## Stats Hybrid/Polished
+
+```{r}
+#| label: stats_hybrid_polished
+
+sig_stars <- function(p) dplyr::case_when(
+  is.na(p)       ~ "",
+  p < 0.001      ~ "***",
+  p < 0.01       ~ "**",
+  p < 0.05       ~ "*",
+  p < 0.1        ~ ".",
+  TRUE           ~ ""
+)
+
+data_full <- data %>% left_join(reference_metrics, by="sample") %>% 
+    mutate(across(c(size_mbp, gc_content, gene_density, cds_per_gene), scale))
+
+data_polished <- data_full %>% filter(strategy %in% c("polished"),
+                              program %notin% c("pilon", "polypolish", "racon", "racon-mp2"))
+
+data_hybrid <- data_full %>% filter(strategy %in% c("hybrid") | program == "flye_polypolish",
+                              program %notin% c("pilon", "polypolish", "racon", "racon-mp2"))
+
+data_multi <- data_full %>% filter(strategy %in% c("hybrid", "polished"),
+                              program %notin% c("pilon", "polypolish", "racon", "racon-mp2"))
+responses <- c(
+    "n50"        ="n50",
+    "ng50"       ="ng50",
+    "busco"      ="busco_complete",
+    "busco_diff" ="busco_complete_diff",
+    "genfrac"    ="genome_fraction_percent",
+    "mism"       ="mism_100kbp",
+    "indel"      ="indel_100kbp",
+    "len_err"    ="length_err_pct",
+    "maxrss_gb"  ="maxrss_gb",
+    "ram_mb"     ="ram_per_mb",
+    "time_mb"    ="time_per_mb",
+    "time"       ="elapsed_sec")
+
+# Make a lmer formula
+mk_form <- function(response, rhs) {
+  as.formula(sprintf("%s ~ %s", response, rhs), env=parent.frame())
+}
+
+fit_block_multi_depths <- function(df, response,
+                                  depth_np_var = "depth_np",
+                                  depth_il_var = "depth_il",
+                                  use_log_depth = FALSE) {
+  # # # Set up variables for testing
+  # df <- data_polished
+  # response <- "mism_100kbp"
+  # depth_np_var <- "depth_np"
+  # depth_il_var <- "depth_il"
+  # use_log_depth = F
+  
+  
+  dff <- df %>%
+    drop_na(all_of(response))
+
+  # Optional transforms (recommended if depth effects are nonlinear)
+  if (use_log_depth) {
+    dff <- dff %>%
+      dplyr::mutate(
+        depth_np_tr = log1p(.data[[depth_np_var]]),
+        depth_il_tr = log1p(.data[[depth_il_var]])
+      )
+    depth_np_term <- "depth_np_tr"
+    depth_il_term <- "depth_il_tr"
+  } else {
+    depth_np_term <- depth_np_var
+    depth_il_term <- depth_il_var
+  }
+
+  # Depth grids for EMMs
+  depth_np_grid <- sort(unique(dff[[depth_np_var]]))
+  depth_il_grid <- sort(unique(dff[[depth_il_var]]))
+
+  # --- MODEL RHS ---
+  rhs <- sprintf(
+    "program * %s * %s +
+     (ref_size + gc_percent + gene_density + cds_per_gene) +
+     program:(ref_size + gc_percent + gene_density + cds_per_gene) +
+     %s:(ref_size + gc_percent + gene_density + cds_per_gene) +
+     %s:(ref_size + gc_percent + gene_density + cds_per_gene) +
+     (1 | sample)",
+    depth_np_term, depth_il_term,
+    depth_np_term, depth_il_term
+  )
+
+  fml <- mk_form(response, rhs)
+  mod <- lme4::lmer(fml, data = dff)
+
+  # --- GLOBAL EFFECTS (Type III Wald chi-square) ---
+  anova_global_tbl <- car::Anova(mod, type = 3) %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("term") %>%
+    dplyr::rename(df = Df, chi_sq = Chisq, p_value = `Pr(>Chisq)`) %>%
+    dplyr::mutate(signif = sig_stars(p_value),
+                  response = response,
+                  .before = 1) %>%
+    dplyr::arrange(p_value)
+
+  # --- SIMPLE SLOPES (two: NP slope and IL slope) ---
+  depth_np_slopes_tbl <- emmeans::emtrends(mod, ~ program, var = depth_np_term) %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::rename(
+      slope = !!paste0(depth_np_term, ".trend"),
+      z_ratio = z.ratio,
+      p_value = p.value
+    ) %>%
+    dplyr::mutate(
+      signif = sig_stars(p_value),
+      response = response,
+      slope_type = "np",
+      .before = 1
+    )
+
+  depth_il_slopes_tbl <- emmeans::emtrends(mod, ~ program, var = depth_il_term) %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::rename(
+      slope = !!paste0(depth_il_term, ".trend"),
+      z_ratio = z.ratio,
+      p_value = p.value
+    ) %>%
+    dplyr::mutate(
+      signif = sig_stars(p_value),
+      response = response,
+      slope_type = "il",
+      .before = 1
+    )
+
+  depth_slopes_tbl <- dplyr::bind_rows(depth_np_slopes_tbl, depth_il_slopes_tbl)
+
+  # --- PROGRAM PAIRWISE COMPARISONS at each (NP, IL) combo ---
+  # Warning: can get large. Use with care if many depth combinations.
+  emm_prog_by_depths <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ program | %s * %s", depth_np_var, depth_il_var)),
+    pbkrtest.limit = 50000,
+    at = rlang::list2(
+      !!depth_np_var := depth_np_grid,
+      !!depth_il_var := depth_il_grid
+    )
+  )
+  
+  prog_pairs_tbl <- emmeans::contrast(emm_prog_by_depths, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "program_at_depth_np_il",
+      .before = 1
+    )
+  
+  
+  # --- PROGRAM PAIRWISE COMPARISONS at avarage depth ---
+  emm_prog_avg_depth <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ program | %s * %s", depth_np_var, depth_il_var)),
+    pbkrtest.limit = 50000
+  )
+  
+  prog_pairs_avg_depth_tbl <- emmeans::contrast(emm_prog_avg_depth, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "program_averaged_over_depth",
+      .before = 1
+    )
+  
+
+  # --- DEPTH PAIRWISE COMPARISONS within program (two useful views) ---
+
+  # (A) short-reads depth contrasts within each program, at each NP depth
+  emm_il_by_program_np <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ %s | program * %s", depth_il_var, depth_np_var)),
+    at = rlang::list2(!!depth_np_var := depth_np_grid,
+                      !!depth_il_var := depth_il_grid)
+  )
+
+  il_pairs_within_np_tbl <- emmeans::contrast(emm_il_by_program_np, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "illumina_depth_within_program_at_np",
+      .before = 1
+    )
+
+  # (B) long-reads depth contrasts within each program, at each IL depth
+  emm_np_by_program_il <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ %s | program * %s", depth_np_var, depth_il_var)),
+    at = rlang::list2(!!depth_np_var := depth_np_grid,
+                      !!depth_il_var := depth_il_grid)
+  )
+
+  np_pairs_within_il_tbl <- emmeans::contrast(emm_np_by_program_il, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "nanopore_depth_within_program_at_il",
+      .before = 1
+    )
+
+  # --- GENOME SLOPES (same as before; can add more covariates similarly) ---
+  genome_trends_tbl <- emmeans::emtrends(mod, ~ program, var = "ref_size") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      covariate = "ref_size",
+      response = response,
+      .before = 1
+    )
+
+  list(
+    model = mod,
+    global_effects = anova_global_tbl,
+    depth_slopes   = depth_slopes_tbl,
+    genome_slopes  = genome_trends_tbl,
+    prog_pairs     = prog_pairs_tbl,
+    prog_pairs_avg_depth = prog_pairs_avg_depth_tbl,
+    il_depth_pairs = il_pairs_within_np_tbl,
+    np_depth_pairs = np_pairs_within_il_tbl,
+    fixed = broom.mixed::tidy(mod, effects = "fixed", conf.int = TRUE),
+    response = response
+  )
+}
+
+# Polished only
+fits <- purrr::imap(
+  responses,
+  ~ fit_block_multi_depths(data_polished, response = .x, use_log_depth = F)
+)
+
+tbls <- imap_dfr(
+  fits,
+  ~ tibble(
+    response_id    = .y,
+    global_effects = list(.x$global_effects),
+    depth_slopes   = list(.x$depth_slopes),
+    genome_slopes  = list(.x$genome_slopes),
+    prog_pairs     = list(.x$prog_pairs),
+    prog_pairs_avg = list(.x$prog_pairs_avg_depth),
+    il_depth_pairs = list(.x$il_depth_pairs),
+    np_depth_pairs = list(.x$np_depth_pairs)
+  )
+)
+
+all_global_effects <- tbls %>% select(response_id, global_effects) %>% unnest(global_effects)
+all_depth_slopes   <- tbls %>% select(response_id, depth_slopes)   %>% unnest(depth_slopes)
+all_genome_slopes  <- tbls %>% select(response_id, genome_slopes)  %>% unnest(genome_slopes)
+all_prog_pairs     <- tbls %>% select(response_id, prog_pairs)     %>% unnest(prog_pairs)
+all_prog_pairs_avg <- tbls %>% select(response_id, prog_pairs_avg) %>% unnest(prog_pairs_avg)
+all_il_depth_pairs <- tbls %>% select(response_id, il_depth_pairs) %>% unnest(il_depth_pairs)
+all_np_depth_pairs <- tbls %>% select(response_id, np_depth_pairs) %>% unnest(np_depth_pairs)
+
+write_csv(all_global_effects, "results/simulated_nolimit_polished_global_effects.csv")
+write_csv(all_depth_slopes,   "results/simulated_nolimit_polished_depth_slopes.csv")
+write_csv(all_genome_slopes,  "results/simulated_nolimit_polished_genome_slopes.csv")
+write_csv(all_prog_pairs,     "results/simulated_nolimit_polished_prog_pairs.csv")
+write_csv(all_prog_pairs_avg, "results/simulated_nolimit_polished_prog_pairs_avg_depth.csv")
+write_csv(all_il_depth_pairs, "results/simulated_nolimit_polished_il_depth_pairs.csv")
+write_csv(all_np_depth_pairs, "results/simulated_nolimit_polished_np_depth_pairs.csv")
+
+# Hybrid only + Polished (flye_polypolish)
+fits <- purrr::imap(
+  responses,
+  ~ fit_block_multi_depths(data_hybrid, response = .x, use_log_depth = F)
+)
+
+tbls <- imap_dfr(
+  fits,
+  ~ tibble(
+    response_id    = .y,
+    global_effects = list(.x$global_effects),
+    depth_slopes   = list(.x$depth_slopes),
+    genome_slopes  = list(.x$genome_slopes),
+    prog_pairs     = list(.x$prog_pairs),
+    prog_pairs_avg = list(.x$prog_pairs_avg_depth),
+    il_depth_pairs = list(.x$il_depth_pairs),
+    np_depth_pairs = list(.x$np_depth_pairs)
+  )
+)
+
+all_global_effects <- tbls %>% select(response_id, global_effects) %>% unnest(global_effects)
+all_depth_slopes   <- tbls %>% select(response_id, depth_slopes)   %>% unnest(depth_slopes)
+all_genome_slopes  <- tbls %>% select(response_id, genome_slopes)  %>% unnest(genome_slopes)
+all_prog_pairs     <- tbls %>% select(response_id, prog_pairs)     %>% unnest(prog_pairs)
+all_prog_pairs_avg <- tbls %>% select(response_id, prog_pairs_avg) %>% unnest(prog_pairs_avg)
+all_il_depth_pairs <- tbls %>% select(response_id, il_depth_pairs) %>% unnest(il_depth_pairs)
+all_np_depth_pairs <- tbls %>% select(response_id, np_depth_pairs) %>% unnest(np_depth_pairs)
+
+write_csv(all_global_effects, "results/simulated_nolimit_hybrid_global_effects.csv")
+write_csv(all_depth_slopes,   "results/simulated_nolimit_hybrid_depth_slopes.csv")
+write_csv(all_genome_slopes,  "results/simulated_nolimit_hybrid_genome_slopes.csv")
+write_csv(all_prog_pairs,     "results/simulated_nolimit_hybrid_prog_pairs.csv")
+write_csv(all_prog_pairs_avg, "results/simulated_nolimit_hybrid_prog_pairs_avg_depth.csv")
+write_csv(all_il_depth_pairs, "results/simulated_nolimit_hybrid_il_depth_pairs.csv")
+write_csv(all_np_depth_pairs, "results/simulated_nolimit_hybrid_np_depth_pairs.csv")
+
+# Hybrid + Polished
+fits <- purrr::imap(
+  responses,
+  ~ fit_block_multi_depths(data_multi, response = .x, use_log_depth = F)
+)
+
+tbls <- imap_dfr(
+  fits,
+  ~ tibble(
+    response_id    = .y,
+    global_effects = list(.x$global_effects),
+    depth_slopes   = list(.x$depth_slopes),
+    genome_slopes  = list(.x$genome_slopes),
+    prog_pairs     = list(.x$prog_pairs),
+    prog_pairs_avg = list(.x$prog_pairs_avg_depth),
+    il_depth_pairs = list(.x$il_depth_pairs),
+    np_depth_pairs = list(.x$np_depth_pairs)
+  )
+)
+
+all_global_effects <- tbls %>% select(response_id, global_effects) %>% unnest(global_effects)
+all_depth_slopes   <- tbls %>% select(response_id, depth_slopes)   %>% unnest(depth_slopes)
+all_genome_slopes  <- tbls %>% select(response_id, genome_slopes)  %>% unnest(genome_slopes)
+all_prog_pairs     <- tbls %>% select(response_id, prog_pairs)     %>% unnest(prog_pairs)
+all_prog_pairs_avg <- tbls %>% select(response_id, prog_pairs_avg) %>% unnest(prog_pairs_avg)
+all_il_depth_pairs <- tbls %>% select(response_id, il_depth_pairs) %>% unnest(il_depth_pairs)
+all_np_depth_pairs <- tbls %>% select(response_id, np_depth_pairs) %>% unnest(np_depth_pairs)
+
+write_csv(all_global_effects, "results/simulated_nolimit_multi_global_effects.csv")
+write_csv(all_depth_slopes,   "results/simulated_nolimit_multi_depth_slopes.csv")
+write_csv(all_genome_slopes,  "results/simulated_nolimit_multi_genome_slopes.csv")
+write_csv(all_prog_pairs,     "results/simulated_nolimit_multi_prog_pairs.csv")
+write_csv(all_prog_pairs_avg, "results/simulated_nolimit_multi_prog_pairs_avg_depth.csv")
+write_csv(all_il_depth_pairs, "results/simulated_nolimit_multi_il_depth_pairs.csv")
+write_csv(all_np_depth_pairs, "results/simulated_nolimit_multi_np_depth_pairs.csv")
+```
+
+## Figures - Non-Hybrid and Non-Polished
+
+```{r}
+#| label: figures_not_hybrid
+#| fig.width: 10
+#| fig.height: 5
+
+program_order <- c("abyss_short", "spades_short", "flye", "hifiasm",
+                   "canu", "raven", "shasta", "nextdenovo", "miniasm")
+
+data_stats_single_plt <- data_stats_single %>%
+  mutate(depth_eff=factor(depth_eff),
+         program=factor(program, levels=program_order)) 
+
+# N50 plot
+plt_n50_single <- data_stats_single_plt %>%
+  arrange(CI_n50, program) %>% 
+ggplot(aes(x=depth_eff, y=mean_n50, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_n50 - CI_n50), ymax=(mean_n50 + CI_n50)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="N50 (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) 
+
+# NG50 plot
+plt_ng50_single <- data_stats_single_plt %>%
+   arrange(CI_ng50, program) %>%
+ggplot(aes(x=depth_eff, y=mean_ng50, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_ng50 - CI_ng50), ymax=(mean_ng50 + CI_ng50)),
+                linewidth=0.5, show.legend = F,  position = position_dodge(width=0.5)) +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="NG50 (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) 
+
+# Mismatches plot
+plt_mism_single <- data_stats_single_plt %>% 
+  arrange(CI_mism, program) %>%
+ggplot(aes(x=depth_eff, y=mean_mism, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_mism - CI_mism), ymax=(mean_mism + CI_mism)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Mismatches(/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Indels plot
+plt_indel_single <- data_stats_single_plt %>% 
+  arrange(CI_indel, program) %>%
+ggplot(aes(x=depth_eff, y=mean_indel, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_indel - CI_indel), ymax=(mean_indel + CI_indel)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Indels (/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Genome Fraction plot
+plt_genfrac_single <- data_stats_single_plt %>% 
+  arrange(CI_genfrac, program) %>%
+ggplot(aes(x=depth_eff, y=mean_genfrac, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_genfrac - CI_genfrac), ymax=(mean_genfrac + CI_genfrac)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Recovered (%)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Length error plot
+plt_len_err_single <- data_stats_single_plt %>%
+  arrange(CI_len_err, program) %>%
+ggplot(aes(x=depth_eff, y=mean_len_err, color=program)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_len_err - CI_len_err), ymax=(mean_len_err + CI_len_err)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Length error (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  # coord_cartesian(ylim=c(-5,5)) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# BUSCO difference plot
+plt_busco_diff_single <- data_stats_single_plt %>%
+  arrange(CI_busco_diff, program) %>%
+ggplot(aes(x=depth_eff, y=mean_busco_diff, color=program)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_busco_diff - CI_busco_diff), ymax=(mean_busco_diff + CI_busco_diff)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="BUSCO difference", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  # coord_cartesian(ylim=c(-5,5)) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Max RAM plot
+plt_maxrss_single <- data_stats_single_plt %>%
+  arrange(CI_maxrss_gb, program) %>%
+ggplot(aes(x=depth_eff, y=mean_maxrss_gb, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Max RAM per Mbp plot
+plt_ram_mb_single <- data_stats_single_plt %>%
+  arrange(CI_ram_mb, program) %>%
+ggplot(aes(x=depth_eff, y=mean_ram_mb, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Time plot
+plt_time_single <- data_stats_single_plt %>%
+  arrange(CI_time, program) %>%
+ggplot(aes(x=depth_eff, y=mean_time, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  #scale_y_continuous(labels=scales::label_number(scale=1/60)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Time (min)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Exclude Canu from time plot (too high)
+plt_time_no_canu_single <- data_stats_single_plt %>% filter(program != "canu") %>%
+  arrange(CI_time, program) %>%
+ggplot(aes(x=depth_eff, y=mean_time, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  scale_y_continuous(labels=scales::label_number(scale=1/3600)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Time (h)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Time per Mbp plot
+plt_time_mb_single <-data_stats_single_plt %>%
+  arrange(CI_time_mb, program) %>%
+ggplot(aes(x=depth_eff, y=mean_time_mb, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  geom_point(size=2, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  #scale_y_continuous(labels=scales::label_number(scale=1/60)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Exclude Canu from time per Mbp plot (too high)
+plt_time_mb_no_canu_single <- data_stats_single_plt %>% filter(program != "canu") %>%
+  arrange(CI_time_mb, program) %>%
+ggplot(aes(x=depth_eff, y=mean_time_mb, color=program)) +
+  geom_line(aes(group=program), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60,75,100)) +
+  #scale_y_continuous(labels=scales::label_number(scale=1/60)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) 
+```
+
+## Figures - Polished vs Flye
+
+```{r}
+#| label: polished_vs_flye
+#| fig.width: 10
+#| fig.height: 5
+
+flye_polished <- full_join(data_stats_single, data_stats_multi) %>% 
+                    mutate(depth_np=ifelse(is.na(depth_np), depth_eff, depth_np),
+                               depth_il=ifelse(is.na(depth_il), 100, depth_il)) %>%
+                  filter(program %in% c("flye", "flye_polypolish", "flye_pilon", "flye_racon", "flye_racon-mp2"), depth_np <= 100, depth_il <= 100) %>%
+                  mutate(program=factor(program, levels=c("flye_racon", "flye_racon-mp2", "flye_polypolish", "flye_pilon","flye"))) %>% 
+                  arrange(program)
+
+flye_polished_split <- full_join(data_stats_single, data_stats_multi) %>% 
+                    mutate(depth_np=ifelse(is.na(depth_np), depth_eff, depth_np),
+                               depth_il=ifelse(is.na(depth_il), 0, depth_il)) %>%
+                  filter(depth_np <= 100, depth_il <= 100) %>%
+                  mutate(program=factor(program)) %>% 
+                  arrange(program)
+
+colors_tmp <- c(colors_programs)
+colors_tmp[["flye"]] <- "#000000"
+
+plt_n50_polished <- flye_polished %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+  ggplot(aes(x=depth_np, y=mean_n50, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il)), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_n50 - CI_n50), ymax=(mean_n50 + CI_n50)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_tmp, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="N50 (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_mism_polished <- flye_polished %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_mism, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il)), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_mism - CI_mism), ymax=(mean_mism + CI_mism)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_tmp, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Mismatches(/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_indel_polished <- flye_polished %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+  ggplot(aes(x=depth_np, y=mean_indel, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il)), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_indel - CI_indel), ymax=(mean_indel + CI_indel)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_tmp, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Indels (/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_len_err_polished <- flye_polished %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_len_err, color=program, alpha=depth_il)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=interaction(program, depth_il)), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_len_err - CI_len_err), ymax=(mean_len_err + CI_len_err)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_tmp, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Length error (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_busco_diff_polished <- flye_polished %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_busco_diff, color=program, alpha=depth_il)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=interaction(program, depth_il)), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_busco_diff - CI_busco_diff), ymax=(mean_busco_diff + CI_busco_diff)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_tmp, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="BUSCO difference", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_genfrac_polished <- flye_polished %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_genfrac, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il)), position = "identity") +
+  geom_point(size=2, position = "identity") +
+  geom_linerange(aes(ymin=(mean_genfrac - CI_genfrac), ymax=(mean_genfrac + CI_genfrac)),
+                linewidth=0.5, show.legend = F, position = "identity") +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_tmp, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Recovered (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_polished_split_maxrss_gb <- function(program_name,title){
+  flye_program <- paste0("flye_", program_name)
+  
+  flye_polished_split %>% filter(program %in% c("flye", !!flye_program, !!program_name)) %>%
+    mutate(program=factor(program, levels = c(!!flye_program, !!program_name, "flye")),
+           depth_il=factor(depth_il), depth_np=as.numeric(depth_np)) %>%
+    arrange(program) %>%
+  ggplot(aes(x=depth_il, y=mean_maxrss_gb, color=program, alpha=depth_np)) +
+    geom_line(aes(group=interaction(program, depth_np))) +
+    geom_point(size=2) +
+    geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                  linewidth=0.5, show.legend = F) +
+    #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+    scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+    scale_color_manual(values=c("olivedrab4","firebrick3","black"), label=c("Flye + Polisher", "Polisher", "Flye"), name="Program") +
+    labs(x="Depth short-reads (x)", y="Max RAM (GB)", title=title) +
+    theme_minimal(base_size=14)+
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          legend.box="vertical", legend.margin=margin()) + 
+    guides(color=guide_legend(reverse=T))
+}
+
+plt_polished_maxrss_racon      <- plt_polished_split_maxrss_gb("racon", "Racon (BWA)")
+plt_polished_maxrss_pilon      <- plt_polished_split_maxrss_gb("pilon", "Pilon")
+plt_polished_maxrss_polypolish <- plt_polished_split_maxrss_gb("polypolish", "Polypolish")
+plt_polished_maxrss_racon_mp2  <- plt_polished_split_maxrss_gb("racon-mp2", "Racon (Minimap2)")
+
+plt_polished_split_ram_mb <- function(program_name,title){
+  flye_program <- paste0("flye_", program_name)
+  
+  flye_polished_split %>% filter(program %in% c("flye", !!flye_program, !!program_name)) %>% 
+    mutate(program=factor(program, levels = c(!!flye_program, !!program_name, "flye")),
+           depth_il=factor(depth_il), depth_np=as.numeric(depth_np)) %>%
+    arrange(program) %>%
+    ggplot(aes(x=depth_il, y=mean_ram_mb, color=program, alpha=depth_np)) +
+    geom_line(aes(group=interaction(program, depth_np))) +
+    geom_point(size=2) +
+    geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                  linewidth=0.5, show.legend = F) +
+    #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+    scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+    scale_color_manual(values=c("olivedrab4","firebrick3","black"), label=c("Flye + Polisher", "Polisher", "Flye"), name="Program") +
+    labs(x="Depth short-reads (x)", y="Max RAM (GB/Mbp)", title=title) +
+    theme_minimal(base_size=14)+
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          legend.box="vertical", legend.margin=margin()) + 
+    guides(color=guide_legend(reverse=T))
+}
+
+plt_polished_ram_mb_racon      <- plt_polished_split_ram_mb("racon", "Racon (BWA)")
+plt_polished_ram_mb_pilon      <- plt_polished_split_ram_mb("pilon", "Pilon")
+plt_polished_ram_mb_polypolish <- plt_polished_split_ram_mb("polypolish", "Polypolish")
+plt_polished_ram_mb_racon_mp2  <- plt_polished_split_ram_mb("racon-mp2", "Racon (Minimap2)")
+
+plt_polished_split_time_mb <- function(program_name,title){
+  flye_program <- paste0("flye_", program_name)
+  
+  flye_polished_split %>% filter(program %in% c("flye", !!flye_program, !!program_name)) %>% 
+    mutate(program=factor(program, levels = c(!!flye_program, !!program_name, "flye")),
+           depth_il=factor(depth_il), depth_np=as.numeric(depth_np)) %>%
+    arrange(program) %>%
+    ggplot(aes(x=depth_il, y=mean_time_mb, color=program, alpha=depth_np)) +
+    geom_line(aes(group=interaction(program, depth_np))) +
+    geom_point(size=2) +
+    geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                  linewidth=0.5, show.legend = F) +
+    #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+    scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+    #scale_y_continuous(labels=scales::label_number(scale=1/60), breaks=c(0,30,60,90,120)) +
+    scale_y_continuous(breaks=c(0,30,60,90,120)) +
+    scale_color_manual(values=c("cyan4","firebrick3","black"), label=c("Flye + Polisher", "Polisher", "Flye"), name="Program") +
+    labs(x="Depth short-reads (x)", y="Time (s/Mbp)", title=title) +
+    theme_minimal(base_size=14)+
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          legend.box="vertical", legend.margin=margin()) + 
+    guides(color=guide_legend(reverse=T))
+}
+
+plt_polished_time_mb_racon      <- plt_polished_split_time_mb("racon", "Racon (BWA)")
+plt_polished_time_mb_pilon      <- plt_polished_split_time_mb("pilon", "Pilon")
+plt_polished_time_mb_polypolish <- plt_polished_split_time_mb("polypolish", "Polypolish")
+plt_polished_time_mb_racon_mp2  <- plt_polished_split_time_mb("racon-mp2", "Racon (Minimap2)")
+```
+
+## Figures - Hybrid and Polished
+
+### N50
+
+```{r}
+#| label: hybrid_n50
+#| fig.width: 10
+#| fig.height: 5
+
+
+stats_hybrid_plot <- data_stats_multi %>%
+                      filter(strategy %in% c("hybrid", "polished"),
+                             program %notin% c("pilon", "racon", "polypolish","racon-mp2"),
+                             program %notin% c("flye_pilon", "flye_racon","flye_racon-mp2"),
+                             depth_np <= 100 ,depth_il <= 100) %>% 
+                      mutate(program=factor(program, levels=c("abyss_hybrid", "spades_hybrid", "masurca", "flye_polypolish")))
+
+plt_n50_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_n50, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_n50, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_n50 - CI_n50), ymax=(mean_n50 + CI_n50)),
+                linewidth=0.5, show.legend = F) +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="N50 (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_n50_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_n50, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_n50, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_n50 - CI_n50), ymax=(mean_n50 + CI_n50)),
+                linewidth=0.5, show.legend = F) +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="N50 (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+### Mismatches
+
+```{r}
+#| label: hybrid_mismatches
+#| fig.width: 10
+#| fig.height: 5
+
+plt_mism_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_mism, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_mism, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_mism - CI_mism), ymax=(mean_mism + CI_mism)),
+                linewidth=0.5, show.legend = F) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Mismatches(/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_mism_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_mism, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_mism, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_mism - CI_mism), ymax=(mean_mism + CI_mism)),
+                linewidth=0.5, show.legend = F) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Mismatches(/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+### Indels
+
+```{r}
+#| label: hybrid_indels
+#| fig.width: 10
+#| fig.height: 5
+
+
+plt_indel_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_indel, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_indel, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_indel - CI_indel), ymax=(mean_indel + CI_indel)),
+                linewidth=0.5, show.legend = F) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Indels (/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_indel_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_indel, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_indel, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_indel - CI_indel), ymax=(mean_indel + CI_indel)),
+                linewidth=0.5, show.legend = F) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Indels (/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+### Max RAM
+
+```{r}
+#| label: hybrid_max_ram
+#| fig.width: 10
+#| fig.height: 5
+
+
+plt_ram_mb_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_ram_mb, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_ram_mb, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_ram_mb_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_ram_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+  filter(depth_np %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_il, y=mean_ram_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_ram_mb_hybrid_xil_full <- stats_hybrid_plot %>%
+  arrange(CI_ram_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_ram_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_maxrss_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_maxrss_gb, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_maxrss_gb, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_maxrss_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_maxrss_gb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_maxrss_gb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+### Run time
+
+```{r}
+#| label: hybrid_time
+#| fig.width: 10
+#| fig.height: 5
+
+plt_time_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_time, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_y_continuous(labels=scales::label_number(scale=1/3600)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Time (h)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_time, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_y_continuous(labels=scales::label_number(scale=1/3600)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (h)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_mb_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_time_mb, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_mp_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+  filter(depth_np %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_il, y=mean_time_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_y_continuous(breaks = c(0,60,120,180,240,300)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_mp_hybrid_xil_full <- stats_hybrid_plot %>%
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_time_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+```
+
+### Length error
+
+```{r}
+#| label: hybrid_len_err
+#| fig.width: 10
+#| fig.height: 5
+
+plt_len_err_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_len_err, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_len_err, color=program, alpha=depth_il)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_len_err - CI_len_err), ymax=(mean_len_err + CI_len_err)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Length error (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_len_err_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_len_err, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_len_err, color=program, alpha=depth_np)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_len_err - CI_len_err), ymax=(mean_len_err + CI_len_err)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Length error (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+# ggarrange(plt_len_err_hybrid_xnp, plt_len_err_hybrid_xil, ncol=2, labels=c("A", "B"),
+#           common.legend=TRUE, legend="bottom")
+```
+
+### Busco difference
+
+```{r}
+#| label: hybrid_busco_diff
+#| fig.width: 10
+#| fig.height: 5
+
+plt_busco_diff_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_busco_diff, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_busco_diff, color=program, alpha=depth_il)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_busco_diff - CI_busco_diff), ymax=(mean_busco_diff + CI_busco_diff)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="BUSCO difference", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_busco_diff_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_busco_diff, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_busco_diff, color=program, alpha=depth_np,)) +
+  geom_hline(yintercept=0, linetype="dashed", color="grey50") +
+  geom_line(aes(group=interaction(program,depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_busco_diff - CI_busco_diff), ymax=(mean_busco_diff + CI_busco_diff)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="BUSCO difference", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+### Genome recovery
+
+```{r}
+#| label: hybrid_genome_recovery
+#| fig.width: 10
+#| fig.height: 5
+
+plt_genfrac_hybrid_xnp <- stats_hybrid_plot %>%
+  arrange(CI_genfrac, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+ggplot(aes(x=depth_np, y=mean_genfrac, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_genfrac - CI_genfrac), ymax=(mean_genfrac + CI_genfrac)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  scale_y_continuous(limits=c(90,100)) +
+  labs(x="Depth long-reads (x)", y="Recovered (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_genfrac_hybrid_xil <- stats_hybrid_plot %>%
+  arrange(CI_genfrac, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_genfrac, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_genfrac - CI_genfrac), ymax=(mean_genfrac + CI_genfrac)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  scale_y_continuous(limits=c(90,100)) +
+  labs(x="Depth short-reads (x)", y="Recovered (%)", title=element_blank()) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+## Figures - Hybrid and Polished
+
+```{r}
+#| label: hybrid_polished_resources
+#| fig.width: 10
+#| fig.height: 5
+
+stats_multi_plot <- data_stats_multi %>%
+                      filter(strategy %in% c("hybrid", "polished"),
+                             program %notin% c("pilon", "racon", "polypolish","racon-mp2"),
+                             program %notin% c("flye_pilon", "flye_racon","flye_racon-mp2"),
+                             depth_np <= 100 ,depth_il <= 100)
+
+plt_time_multi_xil <- stats_multi_plot %>%
+  arrange(CI_time, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+  filter(depth_np %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_il, y=mean_time, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_y_continuous(labels=scales::label_number(scale=1/3600)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (h)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_multi_xil_full <- stats_multi_plot %>%
+  arrange(CI_time, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_time, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_y_continuous(labels=scales::label_number(scale=1/3600)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (h)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_multi_xnp <- stats_multi_plot %>% 
+  arrange(CI_time, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+  filter(depth_il %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_np, y=mean_time, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_y_continuous(labels=scales::label_number(scale=1/3600)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Time (h)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_mp_multi_xil <- stats_multi_plot %>% 
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+  filter(depth_np %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_il, y=mean_time_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_time_mp_multi_xil_full <- stats_multi_plot %>%
+  arrange(CI_time_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_time_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_ram_mb_multi_xnp <- stats_multi_plot %>%
+  arrange(CI_ram_mb, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+  filter(depth_il %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_np, y=mean_ram_mb, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_ram_mb_multi_xil <- stats_multi_plot %>%
+  arrange(CI_ram_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+  filter(depth_np %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_il, y=mean_ram_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_ram_mb_multi_xil_full <- stats_multi_plot %>% 
+  arrange(CI_ram_mb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_ram_mb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_maxrss_multi_xnp <- stats_multi_plot %>%
+  arrange(CI_maxrss_gb, program) %>%
+  mutate(depth_il=as.numeric(depth_il), depth_np=factor(depth_np)) %>%
+  filter(depth_il %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_np, y=mean_maxrss_gb, color=program, alpha=depth_il)) +
+  geom_line(aes(group=interaction(program, depth_il))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth short-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth long-reads (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_maxrss_multi_xil <- stats_multi_plot %>%
+  arrange(CI_maxrss_gb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+  filter(depth_np %in% c(10,30,50,100)) %>%
+ggplot(aes(x=depth_il, y=mean_maxrss_gb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+
+plt_maxrss_multi_xil_full <- stats_multi_plot %>%
+  arrange(CI_maxrss_gb, program) %>%
+  mutate(depth_np=as.numeric(depth_np), depth_il=factor(depth_il)) %>%
+ggplot(aes(x=depth_il, y=mean_maxrss_gb, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F) +
+  scale_alpha_continuous(name="Depth long-reads (x)", range=c(0.25,1), breaks=c(10,30,50,100)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth short-reads (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.box="vertical", legend.margin=margin())
+```
+
+## Publication Figures
+
+### References Characteristics
+
+```{r}
+#| label: figS1_plt_reference_characteristics
+#| fig.width: 8
+#| fig.height: 4
+#| fig-cap: "Figure: Characteristics of the reference genomes used in the assembly benchmark. (A) Number of genes, coding sequences (CDS), and introns versus genome size (in box-plot). (B) Distribution of contig counts. (C) Distribution of GC content."
+#| cache: false
+plot_reference_characteristics
+```
+
+### Strategy: Single
+
+```{r}
+#| label: fig1_strategy_single_metrics
+#| fig.width: 11
+#| fig.height: 11
+#| fig-cap: "Figure: Assembly quality metrics for single assembly strategies. Panels show (A) N50, (B) genome fraction, (C) BUSCO difference, (D) length error, (E) mismatches per 100 kbp, and (F) indels per 100 kbp for each assembly program as a function of nanopore sequencing depth. Note that panels B-F have been zoomed in for better visualization, leaving Miniasm not visible in panels E and F. Complete graphs can be found in Figure S1."
+
+plotA <- plt_n50_single + guides(color=guide_legend(nrow=1))
+plotB <- plt_genfrac_single + coord_cartesian(ylim=c(90,100))
+plotC <- plt_busco_diff_single + coord_cartesian(ylim=c(-10,0))
+plotD <- plt_len_err_single + coord_cartesian(ylim=c(-10,5))
+plotE <- plt_mism_single + coord_cartesian(ylim=c(0,20))
+plotF <- plt_indel_single + coord_cartesian(ylim=c(0,10))
+
+# Strategy: Single 
+ggarrange(plotA, plotB, plotC,
+          plotD, plotE, plotF,
+          ncol=2, nrow=3, labels=c("A", "B", "C", "D", "E", "F"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: figS2_strategy_single_metrics_sup
+#| fig.width: 11
+#| fig.height: 11
+#| fig-cap: "Figure: Complete assembly quality metrics for single assembly strategies. Panels show (A) N50, (B) genome fraction, (C) BUSCO difference, (D) length error, (E) mismatches per 100 kbp, and (F) indels per 100 kbp for each assembly program as a function of nanopore sequencing depth. This figure shows the complete graphs for all metrics, while Figure 1 has been zoomed in for better visualization."
+
+plotA <- plt_n50_single + guides(color=guide_legend(nrow=1))
+plotB <- plt_genfrac_single
+plotC <- plt_busco_diff_single
+plotD <- plt_len_err_single
+plotE <- plt_mism_single 
+plotF <- plt_indel_single
+
+# Strategy: Single
+ggarrange(plotA, plotB, plotC,
+          plotD, plotE, plotF,
+          ncol=2, nrow=3, labels=c("A", "B", "C", "D", "E", "F"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: fig2_strategy_single_resource
+#| fig.width: 11
+#| fig.height: 5
+#| fig-cap: "Figure: Normalized resource usage per Mbp of assembly for single assembly strategies. Panels show (A) maximum RAM usage per Mbp of assembly and (B) run time per Mbp of assembly for each assembly program as a function of nanopore sequencing depth. Note the restricted y-axis on Panel B for better visualization. Complete and unnormalized graphs can be found in Figure S2."
+
+plotA <- plt_ram_mb_single + guides(color=guide_legend(nrow=1))
+plotB <- plt_time_mb_single + coord_cartesian(ylim=c(0,3.5*60)) + scale_y_continuous(breaks=c(0,0.5,1,2,3.5)*60, labels=scales::label_number(scale=1/60))
+
+ggarrange(plotA, plotB,
+          ncol=2, nrow=1, labels=c("A", "B"),
+          common.legend=TRUE, legend="bottom")
+
+```
+
+```{r}
+#| label: figS3_strategy_single_resource_sup
+#| fig.width: 11
+#| fig.height: 4
+#| fig-cap: "Supplementary Figure S: Resource usage for single assembly strategies. Panels show (A) run time, (B) run time per Mbp of assembly (C) unnormalized maximum RAM for each assembly program as a function of nanopore sequencing depth. Canu has been included in this complete graph."
+
+breaksA <- c(0,5,10,15,20,25,30,35,40)*3600
+breaksB <- c(0,5,10,15,20,25,30,40)*60
+
+plotA <- plt_time_single + scale_y_continuous(breaks=breaksA, 
+                                              labels=scales::label_number(scale=1/60)) + guides(color=guide_legend(nrow=1))
+plotB <- plt_time_mb_single + scale_y_continuous(breaks=breaksB,
+                                                  labels=scales::label_number(scale=1/60))
+plotC <- plt_maxrss_single  + guides(color=guide_legend(nrow=1))
+# plotB <- plt_time_single + coord_cartesian(ylim=c(0,2*3600)) + scale_y_continuous(breaks=c(0,0.25,0.5,1,2)*3600, labels=scales::label_number(scale=1/60))
+
+ggarrange(plotA, plotB, plotC,
+          ncol=3, labels=c("A", "B", "C"),
+          common.legend=TRUE, legend="bottom")
+```
+
+### Strategy: Polishing
+
+```{r}
+#| label: fig3_strategy_polished_metrics
+#| fig.width: 10
+#| fig.height: 5
+#| fig-cap: "Figure 3: Assembly quality metrics for polished Flye assemblies. Panels show (A) mismatches per 100Kb of the original and (B) indels per 100Kb of the original for each program. X-axis indicates long-reads depth, and alpha transparency indicates short-reads depth."
+
+plotA <- plt_mism_polished + scale_x_discrete(limits = c("10","15","20")) + coord_cartesian(ylim=c(0,6))
+plotB <- plt_mism_polished + scale_x_discrete(limits = c("25","30","35","40","50","60", "75", "100")) + coord_cartesian(ylim=c(0,4))
+plotC <- plt_indel_polished + scale_x_discrete(limits = c("10","15","20")) + coord_cartesian(ylim=c(0,6))
+# ggarrange(plotA, plotB, plotC, plotD,
+#           ncol=4, labels=c("A","B", "C", "D"), widths = c(0.5,1,0.5,1),
+#           common.legend=TRUE, legend="bottom")
+
+ggarrange(plt_mism_polished + guides(color=guide_legend(nrow=1, reverse=T)),
+          plt_indel_polished,
+          ncol=2, labels=c("A","B"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: fig4_strategy_polished_resources_maxrss_split
+#| fig.width: 10
+#| fig.height: 8
+#| fig-cap: "Figure: Normalized maximum RAM usage per Mbp for polished assembly strategies. Panels show (A) Racon eith BWA-MEM2, (B) Racon with Minimap2, (C) Pilon, and (D) Polypolish. X-axis indicates short-reads depth, and alpha transparency indicates long-reads depth."
+
+ggarrange(plt_polished_ram_mb_racon + coord_cartesian(ylim=c(0,0.6)),
+          plt_polished_ram_mb_racon_mp2 + coord_cartesian(ylim=c(0,0.6)),
+          plt_polished_ram_mb_pilon + coord_cartesian(ylim=c(0,0.6)),
+          plt_polished_ram_mb_polypolish + coord_cartesian(ylim=c(0,0.6)),
+          ncol=2,nrow=2, labels=c("A", "B", "C", "D"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: fig5_strategy_polished_resources_time_split
+#| fig.width: 10
+#| fig.height: 8
+#| fig-cap: "Figure: Normalized run time per Mbp for polished assembly strategies. Panels show (A) Racon eith BWA-MEM2, (B) Racon with Minimap2, (C) Pilon, and (D) Polypolish. X-axis indicates short-reads depth, and alpha transparency indicates long-reads depth."
+
+ggarrange(plt_polished_time_mb_racon + coord_cartesian(ylim=c(0,120)),
+          plt_polished_time_mb_racon_mp2 + coord_cartesian(ylim=c(0,120)),
+          plt_polished_time_mb_pilon + coord_cartesian(ylim=c(0,150)),
+          plt_polished_time_mb_polypolish + coord_cartesian(ylim=c(0,120)),
+          ncol=2,nrow=2, labels=c("A", "B", "C", "D"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: fig_strategy_polished_resources_maxrss_split_sup
+#| fig.width: 10
+#| fig.height: 8
+#| fig-cap: "Figure: Unnormalized maximum RAM usage for polished assembly strategies. Panels show (A) Racon eith BWA-MEM2, (B) Racon with Minimap2, (C) Pilon, and (D) Polypolish. X-axis indicates short-reads depth, and alpha transparency indicates long-reads depth."
+#| eval: false
+
+ggarrange(plt_polished_maxrss_racon + coord_cartesian(ylim=c(0,23)),
+          plt_polished_maxrss_racon_mp2 + coord_cartesian(ylim=c(0,23)),
+          plt_polished_maxrss_pilon + coord_cartesian(ylim=c(0,15)),
+          plt_polished_maxrss_polypolish + coord_cartesian(ylim=c(0,23)),
+          ncol=2,nrow=2, labels=c("A", "B", "C", "D"),
+          common.legend=TRUE, legend="bottom")
+
+```
+
+```{r}
+#| label: fig4_strategy_polished_metrics_sup
+#| fig.width: 10
+#| fig.height: 8
+#| fig-cap: "Supplementary Figure S2: Assembly quality metrics for polished Flye assemblies. Panels show (A) N50, (B) length error, (C) BUSCO difference, and (D) recovered percentage for each program. X-axis indicates long-reads depth, and alpha transparency indicates short-reads depth."
+
+ggarrange(plt_n50_polished + guides(color=guide_legend(nrow=1, reverse=T)),
+          plt_len_err_polished,
+          plt_busco_diff_polished, plt_genfrac_polished,
+          ncol=2, nrow=2, labels=c("A", "B", "C", "D"),
+          common.legend=TRUE, legend="bottom")
+```
+
+### Strategy: Hybrid
+
+```{r}
+#| label: fig6_strategy_hybrid_metrics
+#| fig.width: 10
+#| fig.height: 10
+#| fig-cap: "Figure 4: Assembly quality metrics for hybrid assembly strategies. Panels show (A) N50, (B) genome fraction, (C) BUSCO difference, (D) length error, (E) mismatches per 100 kbp, and (F) indels per 100 kbp for each assembly program as a function of nanopore sequencing depth. X-axis indicates short-reads depth, and alpha transparency indicates long-reads depth. Note that that the Panel C, E & F y-axis has been limited for better visualization, full graph can be found in Figure S3."
+          
+ggarrange(plt_n50_hybrid_xil, plt_genfrac_hybrid_xil,
+          plt_busco_diff_hybrid_xil + coord_cartesian(ylim=c(-4,0)),
+          plt_len_err_hybrid_xil,
+          plt_mism_hybrid_xil + coord_cartesian(ylim=c(0,10)),
+          plt_indel_hybrid_xil + coord_cartesian(ylim=c(0,3)),
+          ncol=2, nrow=3, labels=c("A", "B", "C", "D", "E", "F"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: figS5_strategy_hybrid_metrics_sup
+#| fig.width: 8
+#| fig.height: 10
+#| fig-cap: "Figure S3: Complete assembly quality metrics for hybrid assembly strategies. Panels show (A) BUSCO difference, (B) mismatches per 100 kbp, and (C) indels per 100 kbp for each assembly program as a function of nanopore sequencing depth. X-axis indicates short-reads depth, and alpha transparency indicates long-reads depth."
+
+ggarrange(plt_busco_diff_hybrid_xil,
+          plt_mism_hybrid_xil,
+          plt_indel_hybrid_xil,
+          ncol=1, nrow=3, labels=c("A", "B", "C"),
+          common.legend=TRUE, legend="bottom")
+```
+
+```{r}
+#| label: fig7_strategy_polished_hybrid_resource
+#| fig.width: 10
+#| fig.height: 10
+#| fig-cap: "Figure 5: Resource usage per Mbp of assembly for polished and hybrid assembly strategies. Panels show (A) run time per Mbp of reference and (B) maximum RAM usage per Mbp of reference. Complete graphs with all depths are shown in Supplementary Figures S4 and S5."
+
+plotA <- plt_time_mp_hybrid_xil + scale_alpha_continuous(name="Depth long-reads (x)", range=c(1,1), breaks=c(10,30,60)) +       
+  coord_cartesian(ylim=c(0,300)) +
+  facet_wrap(~depth_np, labeller = labeller(depth_np = ~ paste0("Long-reads ", .x, "x"))) +
+  guides(color=guide_legend(nrow=2), alpha="none") + guides(color=guide_legend(nrow=1, reverse=T))
+
+plotB <- plt_ram_mb_hybrid_xil + scale_alpha_continuous(name="Depth long-reads (x)", range=c(1,1), breaks=c(10,30,60)) +
+  facet_wrap(~depth_np, labeller = labeller(depth_np = ~ paste0("Long-reads ", .x, "x"))) +
+  guides(color=guide_legend(nrow=2), alpha="none") + guides(color=guide_legend(nrow=1, reverse=T))
+
+ggarrange(plotA, plotB,
+          nrow=2, labels=c("A", "B"),
+          common.legend=TRUE, legend="bottom")
+
+```
+
+```{r}
+#| label: figS6_strategy_polished_hybrid_resource_sup1
+#| fig.width: 15
+#| fig.height: 10
+#| fig-cap: "Supplementary Figure S4: Run time per Mbp of assembly for polished and hybrid assembly strategies. Panels indicate distinct long-reads depths: A-10x, B-15x, C-20x, D-25x, E-30x, F-35x, G-40x, H-50X, I-60X. This is the complete version of Figure 5A."
+
+plt <- plt_time_mp_hybrid_xil_full + coord_cartesian(ylim=c(0,300)) +
+  facet_wrap(~depth_np, labeller = labeller(depth_np = ~ paste0("Long-reads ", .x, "x"))) +
+       theme(legend.position="bottom",
+             legend.box="vertical", legend.margin=margin())
+
+egg::tag_facet(plt,
+        x = -Inf, y = 320,
+        open = "", close = "",
+        tag_pool = LETTERS) + theme(strip.text = element_text())
+```
+
+```{r}
+#| label: figS7_strategy_polished_hybrid_resource_sup2
+#| fig.width: 15
+#| fig.height: 12
+#| fig-cap: "Supplementary Figure S5: Maximum RAM usage per Mbp of assembly for polished and hybrid assembly strategies. Panels indicate distinct long-reads depths: A-10x, B-15x, C-20x, D-25x, E-30x, F-35x, G-40x, H-50x, I-60x, J-75x, H-100x. This is the complete version of Figure 5B."
+
+plt <- plt_ram_mb_hybrid_xil_full + facet_wrap(~depth_np, labeller = labeller(depth_np = ~ paste0("Long-reads ", .x, "x")),
+                                               nrow = 4,  ncol = 3) +
+       theme(legend.position="bottom",
+             legend.box="vertical", legend.margin=margin())
+
+egg::tag_facet(plt,
+        x = -Inf, y = 0.90,
+        open = "", close = "",
+        tag_pool = LETTERS) + theme(strip.text = element_text())
+```

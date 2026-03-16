@@ -1,0 +1,1159 @@
+---
+title: "Assembly_benchmark Empirical Data Analysis"
+
+format:
+  html:
+    grid: 
+      body-width: 1000px
+      sidebar-width: 200px
+      margin-width: 200px
+    toc: true
+---
+
+## Setup
+
+```{r}
+#| label: setup
+
+# Import libraries
+pkgs <- c("tidyverse", "janitor", "scales", "rlang", "ggrepel",
+          "ggpp", "knitr", "kableExtra", "ggpubr", "ggExtra", "ggpmisc")
+
+lapply(pkgs, library, character.only=TRUE)
+
+# Set global chunk options
+knitr::opts_chunk$set(results='hold', message=FALSE,
+                      warning=FALSE, fig.show="hold",
+                      out.width="100%", fig.align="center",
+                      fig.width=10, fig.height=5,
+                      dev=c("png", "svg", "pdf"), dpi=600,
+                      cache=TRUE)
+
+
+```
+
+## Load Functions
+
+```{r}
+#| label: load_functions
+
+# Define helper functions
+
+`%notin%` <- Negate(`%in%`)
+
+# 95% Confidence Interval function
+
+CI95 <- function(stde,sample.n){
+  alpha <- 0.05
+  degrees.freedom <- sample.n - 1
+  t.score <- qt(p=alpha/2, df=degrees.freedom,lower.tail=F)
+  CI <- t.score * stde
+  return(CI)
+}
+
+# Set labels for plotting
+display_labels <- c("flye"           ="Flye",
+                    "flye-ovl1000"   ="Flye Min Overlap 1000",
+                    "flye-ovl1500"   ="Flye Min Overlap 1500",
+                    "flye-ovl2000"   ="Flye Min Overlap 2000",
+                    "flye-ovl2500"   ="Flye Min Overlap 2500",
+                    "flye-ovl3000"   ="Flye Min Overlap 3000",
+                    "kmc_np"         ="Estimated Nanopore",
+                    "kmc_il"         ="Estimated Short Reads",
+                    "kmc_chopper"    ="Estimated Long Reads",
+                    "spades_short"   ="SPAdes Short",
+                    "abyss_short"    ="ABySS Short",
+                    "abyss_hybrid"   ="ABySS Hybrid",
+                    "spades_hybrid"  ="SPAdes Hybrid",
+                    "polypolish"     ="Polypolish",
+                    "flye-ovl1000_polypolish"="Flye Min Ovl 1000 + Polypolish")
+
+# Set color palette
+colors_programs <- c("flye"            = "#2CA02C",
+                      "flye-ovl1000"   = "#59A14F",
+                      "flye-ovl1500"   = "#1F83B4",
+                      "flye-ovl2000"   = "#A52A2A",
+                      "flye-ovl2500"   = "#C7519C",
+                      "flye-ovl3000"   = "#8C564B",
+                      "kmc_np"         = "#CD1076",
+                      "kmc_il"         = "#68228B",
+                      "kmc_chopper"    = "#CD1076",
+                      "spades_short"   = "#EDC948",
+                      "abyss_short"    = "#FF7F0E",
+                      "spades_hybrid"  = "#EDC948",
+                      "abyss_hybrid"   = "#FF7F0E",
+                      "polypolish"     = "#00688B",
+                      "flye-ovl1000_polypolish"= "#00688B"
+                       )
+
+# Define samples to be considered
+# samples_to_use <- c(
+#       "BS05_240_246-2", "BS14_240_170-1", "BS05_240_248-5",
+#       "BS08_360_127-6", "BS14_120_152-4",
+#       "BS00_240_177-2", "BS21_CNT_582-1",
+#       "BS11_CNT_642-2", "BS00_120_204-2",
+#       "BS08_120_142-3", "BS04_120_524-1"
+#       )
+
+depth_levels <- c("0", "10x", "15x", "20x", "25x", "30x", "35x", "40x", "50x", "60x", "OG")
+
+# Parse elapsed time function (from sacct)
+parse_elapsed <- function(x) {
+  x <- as.character(x)
+  x <- stringr::str_trim(x)
+  ifelse(is.na(x) | x == "NA", NA_real_,
+         ifelse(stringr::str_detect(x, "^[0-9]+-"),
+                {
+                  m <- stringr::str_match(x, "^(\\d+)-(\\d{1,2}):(\\d{2}):(\\d{2})")
+                  d <- as.numeric(m[, 2]); h <- as.numeric(m[, 3])
+                  mi <- as.numeric(m[, 4]); s <- as.numeric(m[, 5])
+                  d*86400 + h*3600 + mi*60 + s
+                },
+                {
+                  m <- stringr::str_match(x, "^(\\d{1,2}):(\\d{2}):(\\d{2})")
+                  h <- as.numeric(m[, 2]); mi <- as.numeric(m[, 3]); s <- as.numeric(m[, 4])
+                  h*3600 + mi*60 + s
+                })
+  )
+}
+
+# Combine stats for polishing approaches
+combine_programs <- function(df, prog1, prog2) {
+  combo_name <- paste0(prog1, "_", prog2)
+  # collapse duplicates defensively
+  p1 <- df %>% filter(!is.na(n50)) %>%
+    filter(program == !!prog1) 
+
+  p2 <- df %>% filter(!is.na(n50)) %>%
+    filter(program == !!prog2) 
+
+  # join on (sample, depth_np); keep depth_il from prog02
+  combo <- p2 %>%
+    right_join(p1, by=c("sample", "depth_np")) %>%
+    transmute(
+      strategy="polished",
+      program=!!combo_name,
+      sample,
+      depth_np,
+      depth_il=depth_il.x,
+      n50=n50.x,
+      busco_complete=busco_complete.x,
+      busco_single_copy=busco_single_copy.x,
+      busco_multi_copy=busco_multi_copy.x,
+      total_length=total_length.x,
+      mism_100kbp=mism_100kbp.x,
+      maxrss_gb=pmax(maxrss_gb.x, maxrss_gb.y),
+      ram_per_mb=pmax(ram_per_mb.x, ram_per_mb.y),
+      time_per_mb=time_per_mb.x + time_per_mb.y,
+      elapsed_sec=elapsed_sec.x + elapsed_sec.y,
+    )
+  
+  return(combo)
+}
+
+extract_data_real <- function(sacct_file, metrics_file, reads_info) {
+
+  # # Define file paths for testing
+  # sacct_file   <- "files/all_sacct_real.csv"
+  # metrics_file <- "files/quast_busco_results_real.tsv"
+  # reads_info <- "files/real_samples_info.tsv"
+  
+  # Define strategies
+  long_reads_strategy  <- c("flye", "flye-ovl1000", "flye-ovl1500", "flye-ovl2000", "flye-ovl2500",
+                             "flye-ovl3000", "hifiasm", "canu", "raven", "shasta", "nextdenovo", "miniasm")
+  short_reads_strategy <- c("spades_short", "abyss", "abyss_short")
+  hybrid_strategy      <- c("spades_hybrid", "masurca", "abyss_hybrid")
+  polished_strategy    <- c("pilon", "polypolish", "racon", "racon-mp2")
+
+  raw_sacct <- read_csv(sacct_file, col_types=cols()) %>% 
+    mutate(JobName=str_replace_all(JobName, pattern=c("Hifiasm"="hifiasm",
+                                                      	"abyss-"="abyss_",
+                                                        "_FLYE"  ="_NP",
+                                                        "_10x"   ="_NP10x",
+                                                        "_15x"   ="_NP15x",
+                                                        "_20x"   ="_NP20x",
+                                                        "_25x"   ="_NP25x",
+                                                        "_30x"   ="_NP30x",
+                                                        "_35x"   ="_NP35x",
+                                                        "_40x"   ="_NP40x",
+                                                        "_50x"   ="_NP50x",
+                                                        "_60x"   ="_NP60x",
+                                                        "_75x"   ="_NP75x",
+                                                        "_100x"  ="_NP100x")))
+  
+  raw_metrics <- read_tsv(metrics_file, col_types=cols()) %>% 
+    rename(JobName=Assembly) %>%
+    mutate(JobName=str_replace_all(JobName, pattern=c("Hifiasm"="hifiasm",
+                                                      "abyss-"="abyss_",
+                                                      "_FLYE"  ="_NP",
+                                                      "_10x"   ="_NP10x",
+                                                      "_15x"   ="_NP15x",
+                                                      "_20x"   ="_NP20x",
+                                                      "_25x"   ="_NP25x",
+                                                      "_30x"   ="_NP30x",
+                                                      "_35x"   ="_NP35x",
+                                                      "_40x"   ="_NP40x",
+                                                      "_50x"   ="_NP50x",
+                                                      "_60x"   ="_NP60x",
+                                                      "_75x"   ="_NP75x",
+                                                      "_100x"  ="_NP100x")))
+  
+  reads_info_df <- read_tsv(reads_info, col_types=cols()) %>% 
+    rename(Sample=sample)
+  
+  # Split the JobID into two parts: the main job ID and the batch job ID
+  main <- raw_sacct %>% filter(!str_detect(JobID, "\\.batch$"))
+  
+  batch <- raw_sacct %>% 
+    filter(str_detect(JobID, "\\.batch$")) %>%
+    mutate(JobID=str_remove(JobID, "\\.batch$")) %>%
+    select(JobID, MaxRSS_batch=MaxRSS)
+  
+  # Left-join the batch MaxRSS onto the main jobs
+  unified <- main %>%
+    left_join(batch, by="JobID") %>%
+    mutate(
+      MaxRSS=coalesce(MaxRSS_batch, MaxRSS),
+      MaxRSS=parse_number(MaxRSS),
+      MaxRSS_GB=MaxRSS / (1024^2)
+    ) %>%
+    select(-MaxRSS_batch) %>%
+    group_by(JobName) %>%
+    slice_max(Start, n=1, with_ties=FALSE) %>%
+    ungroup() %>%
+    full_join(raw_metrics, by="JobName") %>% # Join with metrics
+    filter(! str_detect(JobName, "reference"))  %>%
+    extract( # Extract relevant columns from JobName
+      col  =JobName,
+      into =c("Program", "Sample", "depthNP", "depthIL"),
+      regex="^(.+?)(?=_BS|_LLP)_(BS.+?|LLP.+?)(?:_NP(.[^_]+))?(?:_IL(.+))?$"
+    ) %>%
+    # full_join(reads_info_df, by="Sample") %>%
+    clean_names() %>%
+    filter(! is.na(total_length)) %>% # Remove entries with no assembly
+    mutate(
+      program=str_to_lower(program),
+      depth_np=str_replace_all(depth_np, "OG", "99x"),
+      depth_il=str_replace_all(depth_il, "OG", "99x"),
+      depth_np=replace_na(parse_number(depth_np), 0), # Adjust this to make work with "OG"
+      depth_il=replace_na(parse_number(depth_il), 0), # Adjust this to make work with "OG"
+      depth_np=replace_na(depth_np, "0"), # Adjust this to make work with "OG"
+      depth_il=replace_na(depth_il, "0"), # Adjust this to make work with "OG"
+      strategy=case_when(
+        program %in% long_reads_strategy ~ "long_reads",
+        program %in% short_reads_strategy ~ "short_reads",
+        program %in% hybrid_strategy ~ "hybrid",
+        program %in% polished_strategy ~ "polished"
+      ),
+      # Elapsed_sec=parse_elapsed(as.character(Elapsed)),
+      elapsed_sec=dplyr::coalesce(suppressWarnings(as.numeric(elapsed)), parse_elapsed(elapsed)),
+      elapsed_min=elapsed_sec / 60,
+      max_rss_per_mb=max_rss_gb / (total_length*1e-6), # Calculate MaxRSS per Mb of genome size
+      elapsed_per_mb=elapsed_sec / (total_length*1e-6) # Calculate Elapsed time per Mb of genome size
+    ) %>%
+     # filter(end != "Unknown") %>% # Remove jobs that haven't ended
+    mutate(strategy=factor(strategy, levels=c("short_reads","long_reads","hybrid","polished")),
+         program = factor(program),
+         sample  = factor(sample),
+         # depth_eff = case_when(
+         #   strategy == "short_reads" ~ depth_il,
+         #   strategy == "long_reads"  ~ depth_np,
+         #   strategy == "hybrid"      ~ paste0(depth_il, "+", depth_np),
+         #   strategy == "polished"    ~ paste0(depth_il, "+", depth_np)
+         # )
+         depth_eff = case_when(
+          strategy == "short_reads" ~ depth_il,
+          strategy == "long_reads"  ~ depth_np,
+          strategy == "hybrid"      ~ depth_il + depth_np,
+          strategy == "polished"    ~ depth_il + depth_np
+         )) %>% 
+    rename(maxrss_gb=max_rss_gb,
+           ram_per_mb=max_rss_per_mb,
+           time_per_mb=elapsed_per_mb,
+           mism_100kbp=number_mismatches_per_100_kbp)
+  
+  # df_flye_pilon <- combine_programs(unified, "flye", "pilon")
+  df_flye_polypolish <- combine_programs(unified, "flye-ovl1000", "polypolish")
+  # df_flye_racon <- combine_programs(unified, "flye", "racon")
+  # df_flye_racon_mp2 <- combine_programs(unified, "flye", "racon-mp2")
+  # 
+  unified <- bind_rows(unified, df_flye_polypolish) %>%
+              mutate(program=factor(program))
+  
+  return(unified)
+}
+
+```
+
+## Load Data
+
+```{r}
+#| label: load_data
+
+
+# Files:
+# real_samples_OG_coverage_summary.tsv - Coverage stats calculated minimap2/BWA2 + samtools depth on OG assemblies
+# real_samples_info.tsv              - Estimated metrics from KMC + Genomescope2 analysis
+# all_sacct_real.csv                - sacct output for all real data assemblies
+# quast_busco_results_real.tsv      - Quast + BUSCO results for all real data assemblies
+
+# Extract and clean data
+data_real_unfiltered <- extract_data_real("files/all_sacct_real.csv",
+                                "files/quast_busco_results_real.tsv",
+                                "files/real_samples_info.tsv")
+data_real_unfiltered %>%
+  filter(strategy %notin% c("hybrid", "polished")) %>% 
+  group_by(sample) %>%
+  summarise(n=n()) %>% 
+  summarise(max_value = max(n, na.rm = TRUE)) %>% as.numeric() -> max_assemblies_per_sample
+  
+data_real_unfiltered %>%
+  filter(strategy %notin% c("hybrid", "polished")) %>% 
+  group_by(sample) %>%
+  summarise(n=n(), .groups="drop") %>%
+  filter(n >= 78) %>%
+  pull(1)  -> complete_samples
+
+data_real <- data_real_unfiltered %>%
+              filter(sample %in% complete_samples,
+                     program != "flye")
+              
+
+# Load estimated metrics for real data
+reference_metrics_real <- read_tsv("files/real_samples_info.tsv", col_types=cols()) %>% 
+  filter(sample %in% complete_samples) %>%
+  mutate(program= case_when(
+                technology == "illumina" ~ "kmc_il",
+                technology == "np" ~ "kmc_np",
+                technology == "chopper"  ~ "kmc_chopper",
+                technology == "chopperk101" ~ "kmc_chopperk101",
+                technology == "chopperk13"  ~ "kmc_chopperk13",
+                technology == "chopperk13p1" ~ "kmc_chopperk13p1",
+                technology == "chopperk21p1" ~ "kmc_chopperk21p1",
+                technology == "chopperk57p1" ~ "kmc_chopperk57p1",
+                TRUE ~ "ukn"
+              ))
+  
+
+coverage_stats <- read_tsv("files/real_samples_OG_coverage_summary.tsv", col_types=cols()) %>%
+  extract( # Extract relevant columns from JobName
+      col  =sample,
+      into =c("program", "sample", "depth_np", "depth_il"),
+      regex="^(.+?)(?=_BS|_LLP)_(BS.+?|LLP.+?)(?:_NP(.[^_]+))?(?:_IL(.+))?$"
+    ) %>% mutate(program = str_to_lower(program)) %>% 
+  filter(sample %in% complete_samples)
+```
+
+
+## Summary statistics
+
+```{r}
+#| label: summary_stats
+
+data_stats_single <- data_real %>%  filter(!is.na(n50)) %>%
+  filter(strategy %notin% c("hybrid", "polished"),
+         sample %in% complete_samples) %>%
+  # filter(depth_np != 99, depth_il != 99) %>%
+  mutate(number_contigs_small = number_contigs_0_bp - number_contigs_1000_bp) %>%
+  group_by(strategy, program, depth_eff) %>% 
+  summarise(
+    n=n(),
+    med_n50        =median(n50, na.rm=TRUE),
+    med_busco      =median(busco_complete, na.rm=TRUE),
+    med_busco_copy =median(busco_multi_copy, na.rm=TRUE),
+    med_maxrss_gb  =median(maxrss_gb, na.rm=TRUE),
+    med_ram_mb     =median(ram_per_mb, na.rm=TRUE),
+    med_time_mb    =median(time_per_mb, na.rm=TRUE),
+    med_sht_contig =median(number_contigs_small, na.rm=TRUE),
+    med_length     =median(total_length, na.rm=TRUE),
+    med_cov_depth  =median(avg_coverage_depth, na.rm=TRUE),
+    mean_n50       =mean(n50, na.rm=TRUE),
+    mean_busco     =mean(busco_complete, na.rm=TRUE),
+    mean_busco_copy=mean(busco_multi_copy, na.rm=TRUE),
+    mean_maxrss_gb =mean(maxrss_gb, na.rm=TRUE),
+    mean_ram_mb    =mean(ram_per_mb, na.rm=TRUE),
+    mean_time_mb   =mean(time_per_mb, na.rm=TRUE),
+    mean_time      =mean(elapsed_sec, na.rm=TRUE),
+    mean_sht_contig=mean(number_contigs_small, na.rm=TRUE),
+    mean_length    =mean(total_length, na.rm=TRUE),
+    mean_cov_depth =mean(avg_coverage_depth, na.rm=TRUE),
+    CI_n50         =CI95(sd(n50)/sqrt(n),n),
+    CI_busco       =CI95(sd(busco_complete)/sqrt(n),n),
+    CI_busco_copy  =CI95(sd(busco_multi_copy)/sqrt(n),n),
+    CI_maxrss_gb   =CI95(sd(maxrss_gb)/sqrt(n),n),
+    CI_ram_mb      =CI95(sd(ram_per_mb)/sqrt(n),n),
+    CI_time_mb     =CI95(sd(time_per_mb)/sqrt(n),n),
+    CI_time        =CI95(sd(elapsed_sec)/sqrt(n),n),
+    CI_sht_contig  =CI95(sd(number_contigs_small)/sqrt(n),n),
+    CI_length      =CI95(sd(total_length)/sqrt(n),n),
+    CI_cov_depth   =CI95(sd(avg_coverage_depth)/sqrt(n),n),
+    .groups="drop"
+  ) %>%
+  mutate(color=colors_programs[as.character(program)]) %>% 
+  arrange(depth_eff, program)
+
+data_stats_multi <- data_real %>% filter(!is.na(mism_100kbp)) %>% 
+  filter(strategy %in% c("hybrid", "polished"),
+         sample %in% complete_samples) %>% 
+  mutate(number_contigs_small = number_contigs_0_bp - number_contigs_1000_bp) %>%
+  group_by(strategy, program, depth_np, depth_il) %>%
+  summarise(
+    n=n(),
+    med_n50        =median(n50, na.rm=TRUE),
+    med_busco      =median(busco_complete, na.rm=TRUE),
+    med_busco_copy =median(busco_multi_copy, na.rm=TRUE),
+    med_maxrss_gb  =median(maxrss_gb, na.rm=TRUE),
+    med_ram_mb     =median(ram_per_mb, na.rm=TRUE),
+    med_time_mb    =median(time_per_mb, na.rm=TRUE),
+    med_sht_contig =median(number_contigs_small, na.rm=TRUE),
+    med_length     =median(total_length, na.rm=TRUE),
+    med_cov_depth  =median(avg_coverage_depth, na.rm=TRUE),
+    med_mism       =median(mism_100kbp, na.rm=TRUE),
+    mean_n50       =mean(n50, na.rm=TRUE),
+    mean_busco     =mean(busco_complete, na.rm=TRUE),
+    mean_busco_copy=mean(busco_multi_copy, na.rm=TRUE),
+    mean_maxrss_gb =mean(maxrss_gb, na.rm=TRUE),
+    mean_ram_mb    =mean(ram_per_mb, na.rm=TRUE),
+    mean_time_mb   =mean(time_per_mb, na.rm=TRUE),
+    mean_time      =mean(elapsed_sec, na.rm=TRUE),
+    mean_sht_contig=mean(number_contigs_small, na.rm=TRUE),
+    mean_length    =mean(total_length, na.rm=TRUE),
+    mean_cov_depth =mean(avg_coverage_depth, na.rm=TRUE),
+    mean_mism      =mean(mism_100kbp, na.rm=TRUE),
+    CI_n50         =CI95(sd(n50)/sqrt(n),n),
+    CI_busco       =CI95(sd(busco_complete)/sqrt(n),n),
+    CI_busco_copy  =CI95(sd(busco_multi_copy)/sqrt(n),n),
+    CI_maxrss_gb   =CI95(sd(maxrss_gb)/sqrt(n),n),
+    CI_ram_mb      =CI95(sd(ram_per_mb)/sqrt(n),n),
+    CI_time_mb     =CI95(sd(time_per_mb)/sqrt(n),n),
+    CI_time        =CI95(sd(elapsed_sec)/sqrt(n),n),
+    CI_sht_contig  =CI95(sd(number_contigs_small)/sqrt(n),n),
+    CI_length      =CI95(sd(total_length)/sqrt(n),n),
+    CI_cov_depth   =CI95(sd(avg_coverage_depth)/sqrt(n),n),
+    CI_mism        =CI95(sd(mism_100kbp)/sqrt(n),n),
+    .groups="drop"
+  ) %>% 
+  mutate(color=colors_programs[as.character(program)]) %>% { . ->> tmp } %>% 
+  filter(strategy %in% c("hybrid", "polished")) %>% 
+  arrange(depth_np, depth_il, program)
+```
+
+
+## Stats Single
+
+```{r}
+#| label: stats_single
+#| eval: false
+
+sig_stars <- function(p) dplyr::case_when(
+  is.na(p)       ~ "",
+  p < 0.001      ~ "***",
+  p < 0.01       ~ "**",
+  p < 0.05       ~ "*",
+  p < 0.1        ~ ".",
+  TRUE           ~ ""
+)
+
+data_single <- data_real %>% filter(strategy %notin% c("hybrid", "polished"))
+
+data_multi <- data_real %>% filter(strategy %in% c("hybrid", "polished"),
+                              program %notin% c("pilon", "polypolish"))
+
+responses <- c(
+    "n50"        ="n50",
+    "busco"      ="busco_complete",
+    "maxrss_gb"  ="maxrss_gb",
+    "ram_mb"     ="ram_per_mb",
+    "time_mb"    ="time_per_mb",
+    "time"       ="elapsed_sec")
+
+# Make a lmer formula
+mk_form <- function(response, rhs) {
+  as.formula(sprintf("%s ~ %s", response, rhs), env=parent.frame())
+}
+
+fit_block_single <- function(df, response) {
+  # #Set variables for testing
+  # df <- data_single
+  # response <- "n50"
+  
+  dff <- df %>%
+    drop_na(all_of(response))
+  
+  depth_grid <- sort(unique(dff$depth_eff))
+  
+  rhs_single <- "program * depth_eff + total_length +
+program:total_length +
+depth_eff:total_length +
+(1 | sample)"
+  
+  fml <- mk_form(response, rhs_single)
+
+  mod <- lme4::lmer(fml, data=dff)
+  
+  anova_global_tbl <- car::Anova(mod, type = 3) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("term") %>%
+  rename(
+    df = Df,
+    chi_sq = Chisq,
+    p_value = `Pr(>Chisq)`
+  ) %>%
+  mutate(
+    signif = sig_stars(p_value),
+    response = response,
+    .before=1
+  ) %>%
+  arrange(p_value)
+
+  emm_depth_by_program <- emmeans::emmeans(
+    mod,
+    ~ depth_eff | program,
+    type = "response"
+  )
+  
+  depth_trends_tbl <- emmeans::emtrends(
+    mod,
+    ~ program,
+    var = "depth_eff"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    rename(
+      slope = depth_eff.trend,
+      df = df,
+      t_ratio = t.ratio,
+      p_value = p.value
+    ) %>%
+    mutate(
+      signif = sig_stars(p_value),
+      response = response,
+      .before=1
+    )
+  
+  emm_prog_by_depth <- emmeans::emmeans(
+    mod,
+    ~ program | depth_eff
+  )
+  
+  prog_pairs_tbl <- emmeans::contrast(
+    emm_prog_by_depth,
+    method = "tukey"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "program_at_depth",
+      .before=1
+    )
+
+  emm_depth_by_program <- emmeans::emmeans(
+    mod,
+    ~ depth_eff | program,
+    at = list(depth_eff = depth_grid)
+  )
+  
+  depth_pairs_tbl <- emmeans::contrast(
+    emm_depth_by_program,
+    method = "tukey"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "depth_within_program",
+      .before=1
+    )
+  
+  genome_trends_tbl <- emmeans::emtrends(
+    mod,
+    ~ program,
+    var = "total_length"
+  ) %>%
+    summary(infer = TRUE) %>%
+    as_tibble() %>%
+    mutate(
+      signif = sig_stars(p.value),
+      covariate = "total_length",
+      response = response,
+      .before=1
+    )
+
+  return(
+    list(
+      model = mod,
+      global_effects = anova_global_tbl,
+      depth_slopes   = depth_trends_tbl,
+      genome_slopes  = genome_trends_tbl,
+      prog_pairs     = prog_pairs_tbl,
+      depth_pairs    = depth_pairs_tbl,
+      fixed = broom.mixed::tidy(mod, effects="fixed", conf.int=TRUE),
+      response = response
+    )
+  )
+}
+
+fits <- purrr::imap(
+  responses,
+  ~ fit_block_single(data_single, response = .x)
+)
+
+tbls <- imap_dfr(
+  fits,
+  ~ tibble(
+    response_id = .y,
+    global_effects = list(.x$global_effects),
+    depth_slopes   = list(.x$depth_slopes),
+    genome_slopes  = list(.x$genome_slopes),
+    prog_pairs     = list(.x$prog_pairs),
+    depth_pairs    = list(.x$depth_pairs)
+  )
+)
+
+all_global_effects <- tbls %>% select(response_id, global_effects) %>% unnest(global_effects)
+all_depth_slopes   <- tbls %>% select(response_id, depth_slopes)   %>% unnest(depth_slopes)
+all_genome_slopes  <- tbls %>% select(response_id, genome_slopes)  %>% unnest(genome_slopes)
+all_prog_pairs     <- tbls %>% select(response_id, prog_pairs)     %>% unnest(prog_pairs)
+all_depth_pairs    <- tbls %>% select(response_id, depth_pairs)    %>% unnest(depth_pairs)
+
+write_csv(all_global_effects, "results/empirical_single_global_effects.csv")
+write_csv(all_depth_slopes,   "results/empirical_single_depth_slopes.csv")
+write_csv(all_genome_slopes,  "results/empirical_single_genome_slopes.csv")
+write_csv(all_prog_pairs,     "results/empirical_single_prog_pairs.csv")
+write_csv(all_depth_pairs,    "results/empirical_single_depth_pairs.csv")
+```
+
+
+## Stats Hybrid/Polished
+
+```{r}
+#| label: stats_hybrid_polished
+#| eval: false
+
+sig_stars <- function(p) dplyr::case_when(
+  is.na(p)       ~ "",
+  p < 0.001      ~ "***",
+  p < 0.01       ~ "**",
+  p < 0.05       ~ "*",
+  p < 0.1        ~ ".",
+  TRUE           ~ ""
+)
+
+# data_full <- data %>% left_join(reference_metrics, by="sample") %>% 
+#     mutate(across(c(size_mbp, gc_content, gene_density, cds_per_gene), scale))
+# 
+# data_polished <- data_real %>% filter(strategy %in% c("polished"),
+#                               program %notin% c("pilon", "polypolish", "racon", "racon-mp2"))
+# 
+# data_hybrid <- data_real %>% filter(strategy %in% c("hybrid"),
+#                               program %notin% c("pilon", "polypolish", "racon", "racon-mp2"))
+
+data_multi <- data_real %>% filter(strategy %in% c("hybrid", "polished"),
+                              program %notin% c("pilon", "polypolish"))
+
+responses <- c(
+    "n50"        ="n50",
+    "busco"      ="busco_complete",
+    "maxrss_gb"  ="maxrss_gb",
+    "ram_mb"     ="ram_per_mb",
+    "time_mb"    ="time_per_mb",
+    "time"       ="elapsed_sec")
+
+# Make a lmer formula
+mk_form <- function(response, rhs) {
+  as.formula(sprintf("%s ~ %s", response, rhs), env=parent.frame())
+}
+
+fit_block_multi_depths <- function(df, response,
+                                  depth_np_var = "depth_np",
+                                  depth_il_var = "depth_il",
+                                  use_log_depth = FALSE) {
+  # # Set up variables for testing
+  # df <- data_multi
+  # response <- "n50"
+  # depth_np_var <- "depth_np"
+  # depth_il_var <- "depth_il"
+  # use_log_depth = F
+  # 
+  
+  dff <- df %>%
+    drop_na(all_of(response))
+
+  # Optional transforms (recommended if depth effects are nonlinear)
+  if (use_log_depth) {
+    dff <- dff %>%
+      dplyr::mutate(
+        depth_np_tr = log1p(.data[[depth_np_var]]),
+        depth_il_tr = log1p(.data[[depth_il_var]])
+      )
+    depth_np_term <- "depth_np_tr"
+    depth_il_term <- "depth_il_tr"
+  } else {
+    depth_np_term <- depth_np_var
+    depth_il_term <- depth_il_var
+  }
+
+  # Depth grids for EMMs
+  depth_np_grid <- sort(unique(dff[[depth_np_var]]))
+  depth_il_grid <- sort(unique(dff[[depth_il_var]]))
+
+  # --- MODEL RHS ---
+  rhs <- sprintf(
+    "program * %s * %s + total_length +
+     program:total_length +
+     %s:total_length +
+     %s:total_length +
+     (1 | sample)",
+    depth_np_term, depth_il_term,
+    depth_np_term, depth_il_term
+  )
+
+  fml <- mk_form(response, rhs)
+  mod <- lme4::lmer(fml, data = dff)
+
+  # --- GLOBAL EFFECTS (Type III Wald chi-square) ---
+  anova_global_tbl <- car::Anova(mod, type = 3) %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("term") %>%
+    dplyr::rename(df = Df, chi_sq = Chisq, p_value = `Pr(>Chisq)`) %>%
+    dplyr::mutate(signif = sig_stars(p_value),
+                  response = response,
+                  .before = 1) %>%
+    dplyr::arrange(p_value)
+
+  # --- SIMPLE SLOPES (two: NP slope and IL slope) ---
+  depth_np_slopes_tbl <- emmeans::emtrends(mod, ~ program, var = depth_np_term) %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::rename(
+      slope = !!paste0(depth_np_term, ".trend"),
+      t_ratio = t.ratio,
+      p_value = p.value
+    ) %>%
+    dplyr::mutate(
+      signif = sig_stars(p_value),
+      response = response,
+      slope_type = "np",
+      .before = 1
+    )
+
+  depth_il_slopes_tbl <- emmeans::emtrends(mod, ~ program, var = depth_il_term) %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::rename(
+      slope = !!paste0(depth_il_term, ".trend"),
+      t_ratio = t.ratio,
+      p_value = p.value
+    ) %>%
+    dplyr::mutate(
+      signif = sig_stars(p_value),
+      response = response,
+      slope_type = "il",
+      .before = 1
+    )
+
+  depth_slopes_tbl <- dplyr::bind_rows(depth_np_slopes_tbl, depth_il_slopes_tbl)
+
+  # --- PROGRAM PAIRWISE COMPARISONS at each (NP, IL) combo ---
+  # Warning: can get large. Use with care if many depth combinations.
+  emm_prog_by_depths <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ program | %s * %s", depth_np_var, depth_il_var)),
+    pbkrtest.limit = 50000,
+    at = rlang::list2(
+      !!depth_np_var := depth_np_grid,
+      !!depth_il_var := depth_il_grid
+    )
+  )
+  
+  prog_pairs_tbl <- emmeans::contrast(emm_prog_by_depths, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "program_at_depth_np_il",
+      .before = 1
+    )
+  
+  
+  # --- PROGRAM PAIRWISE COMPARISONS at avarage depth ---
+  emm_prog_avg_depth <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ program | %s * %s", depth_np_var, depth_il_var)),
+    pbkrtest.limit = 50000
+  )
+  
+  prog_pairs_avg_depth_tbl <- emmeans::contrast(emm_prog_avg_depth, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "program_averaged_over_depth",
+      .before = 1
+    )
+  
+
+  # --- DEPTH PAIRWISE COMPARISONS within program (two useful views) ---
+
+  # (A) Illumina depth contrasts within each program, at each NP depth
+  emm_il_by_program_np <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ %s | program * %s", depth_il_var, depth_np_var)),
+    at = rlang::list2(!!depth_np_var := depth_np_grid,
+                      !!depth_il_var := depth_il_grid)
+  )
+
+  il_pairs_within_np_tbl <- emmeans::contrast(emm_il_by_program_np, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "illumina_depth_within_program_at_np",
+      .before = 1
+    )
+
+  # (B) Nanopore depth contrasts within each program, at each IL depth
+  emm_np_by_program_il <- emmeans::emmeans(
+    mod,
+    as.formula(sprintf("~ %s | program * %s", depth_np_var, depth_il_var)),
+    at = rlang::list2(!!depth_np_var := depth_np_grid,
+                      !!depth_il_var := depth_il_grid)
+  )
+
+  np_pairs_within_il_tbl <- emmeans::contrast(emm_np_by_program_il, method = "tukey") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      response = response,
+      comparison_type = "nanopore_depth_within_program_at_il",
+      .before = 1
+    )
+
+  # --- GENOME SLOPES (same as before; can add more covariates similarly) ---
+  genome_trends_tbl <- emmeans::emtrends(mod, ~ program, var = "total_length") %>%
+    summary(infer = TRUE) %>%
+    tibble::as_tibble() %>%
+    dplyr::mutate(
+      signif = sig_stars(p.value),
+      covariate = "total_length",
+      response = response,
+      .before = 1
+    )
+
+  list(
+    model = mod,
+    global_effects = anova_global_tbl,
+    depth_slopes   = depth_slopes_tbl,
+    genome_slopes  = genome_trends_tbl,
+    prog_pairs     = prog_pairs_tbl,
+    prog_pairs_avg_depth = prog_pairs_avg_depth_tbl,
+    il_depth_pairs = il_pairs_within_np_tbl,
+    np_depth_pairs = np_pairs_within_il_tbl,
+    fixed = broom.mixed::tidy(mod, effects = "fixed", conf.int = TRUE),
+    response = response
+  )
+}
+
+fits <- purrr::imap(
+  responses,
+  ~ fit_block_multi_depths(data_multi, response = .x, use_log_depth = F)
+)
+
+tbls <- imap_dfr(
+  fits,
+  ~ tibble(
+    response_id    = .y,
+    global_effects = list(.x$global_effects),
+    depth_slopes   = list(.x$depth_slopes),
+    genome_slopes  = list(.x$genome_slopes),
+    prog_pairs     = list(.x$prog_pairs),
+    prog_pairs_avg = list(.x$prog_pairs_avg_depth),
+    il_depth_pairs = list(.x$il_depth_pairs),
+    np_depth_pairs = list(.x$np_depth_pairs)
+  )
+)
+
+all_global_effects <- tbls %>% select(response_id, global_effects) %>% unnest(global_effects)
+all_depth_slopes   <- tbls %>% select(response_id, depth_slopes)   %>% unnest(depth_slopes)
+all_genome_slopes  <- tbls %>% select(response_id, genome_slopes)  %>% unnest(genome_slopes)
+all_prog_pairs     <- tbls %>% select(response_id, prog_pairs)     %>% unnest(prog_pairs)
+all_prog_pairs_avg <- tbls %>% select(response_id, prog_pairs_avg) %>% unnest(prog_pairs_avg)
+all_il_depth_pairs <- tbls %>% select(response_id, il_depth_pairs) %>% unnest(il_depth_pairs)
+all_np_depth_pairs <- tbls %>% select(response_id, np_depth_pairs) %>% unnest(np_depth_pairs)
+
+write_csv(all_global_effects, "results/empirical_multi_global_effects.csv")
+write_csv(all_depth_slopes,   "results/empirical_multi_depth_slopes.csv")
+write_csv(all_genome_slopes,  "results/empirical_multi_genome_slopes.csv")
+write_csv(all_prog_pairs,     "results/empirical_multi_prog_pairs.csv")
+write_csv(all_prog_pairs_avg, "results/empirical_multi_prog_pairs_avg_depth.csv")
+write_csv(all_il_depth_pairs, "results/empirical_multi_il_depth_pairs.csv")
+write_csv(all_np_depth_pairs, "results/empirical_multi_np_depth_pairs.csv")
+```
+
+### Size Estimation
+
+```{r}
+#| label: size_estimation_plot
+#| fig.width: 10
+#| fig.height: 6
+#| fig.align: center
+
+plot_only <- c("spades_short", "spades_hybrid", "abyss_short", "kmc_il", "kmc_chopper",
+               "flye-ovl1000","flye-ovl1500", "flye-ovl2000", "flye-ovl2500",
+               "flye-ovl3000","flye-ovl1000_polypolish")
+
+length_df <- data_real %>% unite("depth", depth_np, depth_il, sep="") %>%
+              filter(str_detect(depth, "99")) %>% 
+              select(sample, program, total_length) 
+
+length_df <- reference_metrics_real %>%
+              mutate(program= case_when(
+                technology == "illumina" ~ "kmc_il",
+                technology == "np" ~ "kmc_np",
+                technology == "chopper"  ~ "kmc_chopper",
+                technology == "chopperk101" ~ "kmc_chopperk101",
+                technology == "chopperk13"  ~ "kmc_chopperk13",
+                technology == "chopperk13p1" ~ "kmc_chopperk13p1",
+                technology == "chopperk21p1" ~ "kmc_chopperk21p1",
+                technology == "chopperk57p1" ~ "kmc_chopperk57p1",
+                TRUE ~ "ukn"
+              )) %>% 
+              select(sample, min_bp, max_bp, mean_bp, program) %>% 
+              rename(total_length=mean_bp) %>%
+              bind_rows(length_df) %>% 
+              filter(program %in% plot_only) %>% 
+              mutate(program = factor(program, levels = plot_only))
+
+length_df %>% filter(program %in% plot_only) %>%
+  group_by(program) %>%
+  mutate(total_length = total_length * 1e-6) %>%
+  summarise(med_length=median(total_length), 
+            mean_length=mean(total_length),
+            CI_length=CI95(sd(total_length)/sqrt(n()), n()),
+            .groups="drop") %>%
+  arrange(med_length) -> length_summary
+
+long_estimate <- length_summary[[1,3]]
+short_estimate <- length_summary[[2,3]]
+flye_1000 <- length_summary[[10,3]]
+flye_3000 <- length_summary[[3,3]]
+
+flye_diff <- (flye_1000 - flye_3000) / flye_1000 * 100
+
+length_summary %>% 
+  mutate(short_compare = mean_length - short_estimate,
+         long_compare = mean_length - long_estimate,
+         short_percent = short_compare / short_estimate * 100,
+         long_percent = long_compare / long_estimate * 100
+         ) -> length_summary
+
+length_df %>%
+  filter(program %in% plot_only) %>%
+  ggplot(aes(x=program, y=total_length, color=program)) +
+  geom_point(size=3, alpha=0.15) +
+  geom_line(aes(group=sample), alpha=0.15) +
+  geom_boxplot() +
+  labs(x="", y="Assembly size (Mbp)") +
+  scale_y_continuous(labels=scales::label_number(scale=1e-06)) +
+  scale_x_discrete(labels=display_labels) +
+  theme_minimal(base_size=14) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.position="none",
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) -> size_estimation_plot
+```
+
+## Figures - Non-Hybrid and Non-Polished
+
+```{r}
+#| label: empirical_figures_not_hybrid
+#| fig.width: 10
+#| fig.height: 6
+#| fig.align: center
+
+program_order <- c("spades_short", "abyss_short", "flye-ovl1000",
+                   "flye-ovl1500", "flye-ovl2000", "flye-ovl2500",
+               "flye-ovl3000")
+
+x_labels <- c("10x", "15x", "20x", "25x", "30x", "35x", "40x", "50x", "60x", "OG")
+
+data_stats_single_plt <- data_stats_single %>%
+  filter(program %in% program_order) %>%
+  mutate(depth_eff=factor(depth_eff),
+         program=factor(program, levels=program_order))
+
+# N50 plot
+plt_n50_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_n50, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_n50 - CI_n50), ymax=(mean_n50 + CI_n50)),
+                linewidth=0.5, show.legend = F) +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  scale_x_discrete(labels=x_labels) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="N50 (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=10) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) 
+
+# Length plot
+plt_length_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_length, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_length - CI_length), ymax=(mean_length + CI_length)),
+                linewidth=0.5, show.legend = F) +
+  scale_y_continuous(labels=scales::label_number(scale=1e-6)) +
+  scale_x_discrete(labels=x_labels) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Assembly Size (Mbp)", title=element_blank()) +
+  theme_minimal(base_size=10) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# BUSCO complete plot
+plt_busco_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_busco, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_busco - CI_busco), ymax=(mean_busco + CI_busco)),
+                linewidth=0.5, show.legend = F) +
+  scale_x_discrete(labels=x_labels) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="BUSCO %", title=element_blank()) +
+  theme_minimal(base_size=10) +
+  # coord_cartesian(ylim=c(-5,5)) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# BUSCO Copy plot
+plt_busco_copy_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_busco_copy, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_busco_copy - CI_busco_copy), ymax=(mean_busco_copy + CI_busco_copy)),
+                linewidth=0.5, show.legend = F) +
+  scale_x_discrete(labels=x_labels) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="BUSCO % Multiple Copy", title=element_blank()) +
+  theme_minimal(base_size=10) +
+  # coord_cartesian(ylim=c(-5,5)) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Max RAM plot
+plt_maxrss_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_maxrss_gb, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_maxrss_gb - CI_maxrss_gb), ymax=(mean_maxrss_gb + CI_maxrss_gb)),
+                linewidth=0.5, show.legend = F) +
+  scale_x_discrete(labels=x_labels) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Max RAM (GB)", title=element_blank()) +
+  theme_minimal(base_size=10)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Max RAM per Mbp plot
+plt_ram_mb_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_ram_mb, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_ram_mb - CI_ram_mb), ymax=(mean_ram_mb + CI_ram_mb)),
+                linewidth=0.5, show.legend = F) +
+  scale_x_discrete(labels=x_labels) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Max RAM (GB/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=10)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Time plot
+plt_time_single <- data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_time, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_time - CI_time), ymax=(mean_time + CI_time)),
+                linewidth=0.5, show.legend = F) +
+  scale_x_discrete(labels=x_labels) +
+  #scale_y_continuous(labels=scales::label_number(scale=1/60)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Time (min)", title=element_blank()) +
+  theme_minimal(base_size=10)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+# Time per Mbp plot
+plt_time_mb_single <-data_stats_single_plt %>%
+ggplot(aes(x=depth_eff, y=mean_time_mb, color=program)) +
+  geom_line(aes(group=program)) +
+  geom_linerange(aes(ymin=(mean_time_mb - CI_time_mb), ymax=(mean_time_mb + CI_time_mb)),
+                linewidth=0.5, show.legend = F) +
+  geom_point(size=2) +
+  scale_x_discrete(labels=x_labels) +
+  #scale_y_continuous(labels=scales::label_number(scale=1/60)) +
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth (x)", y="Time (s/Mbp)", title=element_blank()) +
+  theme_minimal(base_size=10)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) 
+
+# Arrange plots
+ggarrange(plt_n50_single, plt_length_single, plt_ram_mb_single, 
+          plt_busco_single, plt_busco_copy_single, plt_time_mb_single,
+          ncol=3, nrow=2, labels=c("A", "B", "C", "D", "E", "F"),
+          common.legend=TRUE, legend="bottom")
+```
+
+## Figures - Multi - Hybrid and Polished
+
+```{r}
+#| label: figS9_empirical_hybrid_multi
+#| fig.width: 10
+#| fig.height: 6
+
+program_order <- c("flye-ovl1000_polypolish")
+
+x_labels <- c("10x", "15x", "20x", "25x", "30x", "35x", "40x", "50x", "60x", "OG")
+
+data_stats_multi_plt <- data_stats_multi %>%
+  filter(program %in% program_order) %>%
+  mutate(depth_np=factor(depth_np),
+         depth_il=factor(depth_il),
+         program=factor(program, levels=program_order))
+
+# Mismatches per 100kbp plot
+data_stats_multi_plt %>%
+  ggplot(aes(x=depth_il, y=mean_mism, color=program, alpha=depth_np)) +
+  geom_line(aes(group=interaction(program, depth_np))) +
+  geom_point(size=2) +
+  geom_linerange(aes(ymin=(mean_mism - CI_mism), ymax=(mean_mism + CI_mism)),
+                linewidth=0.5, show.legend = F) +
+  #scale_x_continuous(breaks=c(10,15,20,25,30,35,40,50,60)) +
+  scale_alpha_ordinal(name="Depth Long-reads (x)", range=c(0.25,1), breaks=c(10,30,60))+
+  scale_color_manual(values=colors_programs, label=display_labels, name="Program") +
+  labs(x="Depth Short-reads (x)", y="Mismatches(/100kb)", title=element_blank()) +
+  theme_minimal(base_size=14)+
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.position = "bottom", legend.margin=margin())
+```
+
+```{r}
+#| label: fig8_empirical_data
+#| fig.width: 10
+#| fig.height: 6
+#| fig.align: center
+
+figure_not_hybrid_summary
+
+```
