@@ -1,0 +1,7 @@
+.vscode
+.lintr
+.Rhistory
+*.RData
+.Rprofile
+renv
+.DS_Store
